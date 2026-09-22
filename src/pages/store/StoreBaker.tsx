@@ -23,6 +23,8 @@ export default function StoreBaker({ onOpen }: { onOpen: (id: string) => void })
       <h2 className="pagename">👩‍🍳 裱花师制作看板 · {boot?.stores.find(s => s.id === account?.storeId)?.name}</h2>
       <div className="pagesub">按取货时间排序：先看制作时间与特殊禁忌，再看题字与造型参考；任何缺货/返工都登记回原订单，客服与顾客实时可见</div>
 
+      <RemakeBoard orders={orders} onOpen={onOpen} />
+
       <div className="kanban">
         {cols.map(col => {
           const list = orders.filter(o => col.statuses.includes(o.status))
@@ -219,5 +221,48 @@ function ReworkModal({ o, onClose }: { o: Order; onClose: () => void }) {
       <div className="field"><label>返工说明</label><textarea className="input" value={note} onChange={e => setNote(e.target.value)} placeholder="具体部位、处理方式" /></div>
       <div className="field"><label>估算内部成本（¥）</label><input className="input" type="number" value={cost} onChange={e => setCost(Number(e.target.value))} /></div>
     </Modal>
+  )
+}
+
+// 售后补做看板：补做会重新生成制作排班与取货时间
+function RemakeBoard({ orders, onOpen }: { orders: Order[]; onOpen: (id: string) => void }) {
+  const { act, openOrder } = useStore()
+  const remakes = orders.flatMap(o => (o.remakes || []).map(r => ({ o, r })))
+    .filter(({ r }) => r.status !== 'picked_up')
+    .sort((a, b) => (a.r.pickupDate + a.r.slot).localeCompare(b.r.pickupDate + b.r.slot))
+  if (remakes.length === 0) return null
+  const ST: Record<string, string> = {
+    scheduled: '已排班·待备料', materials: '备料完成', producing: '补做制作中', ready: '待取货', picked_up: '已取货'
+  }
+  const next: Record<string, 'materials' | 'start' | 'ready' | 'pickup'> = {
+    scheduled: 'materials', materials: 'start', producing: 'ready', ready: 'pickup'
+  }
+  const NEXT_LABEL: Record<string, string> = {
+    materials: '登记补做备料', start: '开始补做制作', ready: '补做完成（上传成品）', pickup: '前台确认取货'
+  }
+  return (
+    <div className="card mt12" style={{ borderLeft: '4px solid var(--brand)' }}>
+      <h3 style={{ marginTop: 0 }}>🎂 售后补做排班（{remakes.length}）<span className="sec-sub">取货后造型申诉判定补做，系统已重新排定制作与取货时间</span></h3>
+      <div className="grid cols-2 mt8" style={{ gap: 10 }}>
+        {remakes.map(({ o, r }) => (
+          <div key={r.id} className="card" style={{ padding: 12 }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <button className="btn sm ghost" style={{ padding: 0, fontWeight: 800 }} onClick={() => onOpen(o.id)}>{o.id}</button>
+              <Badge kind="violet">{ST[r.status]}</Badge>
+            </div>
+            <div className="small mt8">🕑 新取货 <b>{fmtDate(r.pickupDate)} {r.slot}</b></div>
+            <div className="tiny muted">制作开始 {fmtDateTime(r.makeStart)}</div>
+            <div className="tiny mt8">🎂 {catName(useStore.getState().boot!.catalog, 'styles', o.cake.styleId)} · 题字「{o.cake.inscription}」</div>
+            <div className="tiny muted" style={{ whiteSpace: 'pre-wrap' }}>{r.note}</div>
+            {r.status !== 'picked_up' &&
+              <button className="btn sm primary mt8" onClick={async () => {
+                const res = await act(o.id, 'remake_action', { remakeId: r.id, step: next[r.status] })
+                if (res) openOrder(o.id)
+              }}>{NEXT_LABEL[next[r.status]]}</button>}
+            {r.status === 'ready' && <div className="tiny mt8" style={{ color: 'var(--ok)' }}>成品已就绪，请通知顾客按新时间到店，由前台核验交付。</div>}
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

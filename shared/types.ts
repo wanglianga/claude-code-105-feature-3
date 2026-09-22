@@ -24,6 +24,16 @@ export type CaseKind =
 
 export type CaseStatus = 'open' | 'awaiting_customer' | 'resolved' | 'rejected' | 'closed'
 
+// 取货后造型申诉：客服判定结论
+export type AppealVerdict =
+  | 'refund' // 退款
+  | 'remake' // 补做（重新生成制作排班与取货时间）
+  | 'coupon' // 优惠券赔付（进入顾客账户，关联申诉原因）
+  | 'reject' // 拒绝赔付
+
+// 责任归属：门店责任（造型/包装/冷链）或顾客自提责任（自提运输途中）
+export type AppealResponsibility = 'store' | 'self_pickup'
+
 export interface Account {
   id: string
   username: string
@@ -117,6 +127,32 @@ export interface CaseProposal {
   at: string
 }
 
+// 造型申诉原因码（客服统计与优惠券关联用）
+export type AppealReasonCode =
+  | 'style_mismatch' // 造型与参考不符
+  | 'inscription_wrong' // 题字错误
+  | 'ingredient_mismatch' // 原料/水果不符
+  | 'transport_deformation' // 运输变形
+  | 'packaging_damage' // 包装破损/融化
+  | 'food_issue' // 食用后不适
+  | 'other'
+
+export interface AppealDecision {
+  verdict: AppealVerdict
+  responsibility: AppealResponsibility
+  transportDeformation: boolean // 变形是否发生在离开门店后的运输环节
+  reasonCode: AppealReasonCode
+  note: string // 客服判定说明（对顾客可见）
+  internalNote?: string
+  by: string
+  at: string
+  refundAmount?: number // verdict=refund
+  couponId?: string // verdict=coupon
+  remakePickupDate?: string // verdict=remake
+  remakeSlot?: string
+  remakeMakeStart?: string
+}
+
 export interface ServiceCase {
   id: string
   kind: CaseKind
@@ -136,6 +172,49 @@ export interface ServiceCase {
   closedNote?: string
   evidencePhoto?: string
   refundAmount?: number
+  // —— 取货后造型申诉（kind=after_sale）——
+  reasonCode?: AppealReasonCode
+  transportMode?: 'cold_chain' | 'ambient' // 运输/交付方式：冷链保温袋 or 常温自提
+  transportNote?: string // 顾客自述离店后运输情况（历时、保存方式）
+  signedAt?: string // 签收时间快照（对比依据）
+  decision?: AppealDecision // 客服判定结论（退款/补做/优惠券/拒绝 + 责任）
+}
+
+// 补做：判定补做后重新生成的制作排班与取货时间
+export interface RemakeAppointment {
+  id: string
+  caseId: string
+  reasonCode: AppealReasonCode
+  responsibility: AppealResponsibility
+  pickupDate: string
+  slot: string
+  makeStart: string // 重新排定的制作开始时间
+  materialsReadyAt?: string
+  readyAt?: string
+  pickedUpAt?: string
+  status: 'scheduled' | 'materials' | 'producing' | 'ready' | 'picked_up'
+  note: string
+  createdAt: string
+}
+
+export interface Coupon {
+  id: string
+  code: string
+  customerPhone: string
+  customerName: string
+  amount: number
+  title: string
+  reasonCode: AppealReasonCode
+  reasonText: string // 关联本次申诉原因
+  orderId: string
+  caseId: string
+  storeId: string
+  responsibility: AppealResponsibility
+  status: 'issued' | 'used' | 'expired'
+  issuedAt: string
+  expireAt: string
+  usedAt?: string
+  issuedBy: string
 }
 
 export interface TimelineEvent {
@@ -199,6 +278,7 @@ export interface Order {
   timeline: TimelineEvent[]
   cases: ServiceCase[]
   reworks: ReworkRecord[]
+  remakes: RemakeAppointment[] // 售后补做重新生成的制作排班/取货时间
   photos: OrderPhotos
   makeStartTime?: string
   materialsReadyAt?: string
@@ -232,6 +312,7 @@ export interface AppState {
   stock: Record<string, Record<string, 'ok' | 'low' | 'out'>> // storeId -> fruitId
   accounts: Omit<Account, 'password'>[]
   orders: Order[]
+  coupons: Coupon[] // 造型申诉优惠券（进入顾客账户）
 }
 
 // ---- 动作载荷（/api/orders/:id/action）----
@@ -258,4 +339,26 @@ export const CASE_LABEL: Record<CaseKind, string> = {
   fridge_capacity: '冷柜容量不足',
   store_transfer: '跨店调货',
   after_sale: '售后申请'
+}
+
+export const APPEAL_VERDICT_LABEL: Record<AppealVerdict, string> = {
+  refund: '退款',
+  remake: '补做',
+  coupon: '优惠券赔付',
+  reject: '拒绝赔付'
+}
+
+export const APPEAL_REASON_LABEL: Record<AppealReasonCode, string> = {
+  style_mismatch: '造型与参考不符',
+  inscription_wrong: '题字错误',
+  ingredient_mismatch: '原料/水果不符',
+  transport_deformation: '运输途中变形',
+  packaging_damage: '包装破损/融化',
+  food_issue: '食用后不适',
+  other: '其他'
+}
+
+export const RESPONSIBILITY_LABEL: Record<AppealResponsibility, string> = {
+  store: '门店责任',
+  self_pickup: '顾客自提责任'
 }

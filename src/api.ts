@@ -1,5 +1,6 @@
 import type {
-  Account, AppState, Catalog, Order, StoreInfo, ServiceCase
+  Account, AppState, Catalog, Order, StoreInfo, ServiceCase, Coupon,
+  AppealVerdict, AppealResponsibility, AppealReasonCode
 } from '../shared/types'
 
 const TOKEN_KEY = 'scs_token'
@@ -34,6 +35,7 @@ export const api = {
   setStock: (storeId: string, body: Record<string, 'ok' | 'low' | 'out'>) =>
     request<{ ok: boolean }>(`/api/stock/${storeId}`, { method: 'POST', body: JSON.stringify(body) }),
   analytics: () => request<Analytics>('/api/analytics'),
+  coupons: () => request<{ coupons: Coupon[] }>('/api/coupons'),
   reset: () => request<{ ok: boolean }>('/api/reset', { method: 'POST' })
 }
 
@@ -48,6 +50,19 @@ export interface Bootstrap extends Pick<AppState, 'catalog' | 'stores' | 'stock'
   capacity: (CapacityInfo & { storeId: string })[]
 }
 export interface Derived { total: number; modifyLocked: boolean; afterSaleDeadline: string | null }
+export interface StoreStyleQuality {
+  storeId: string
+  store: string
+  total: number
+  storeResp: number
+  selfResp: number
+  verdicts: Record<AppealVerdict, number>
+  refundSum: number
+  couponSum: number
+  transportDeform: number
+  byReason: Record<string, number>
+  storeFaultRate: number
+}
 export interface Analytics {
   reworkByStyle: { styleId: string; style: string; count: number; cost: number }[]
   changeByMaterial: { materialId: string; material: string; count: number; kinds: Record<string, number> }[]
@@ -55,6 +70,9 @@ export interface Analytics {
   casesByKind: Record<string, number>
   afterSaleRate: number
   fridgeToday: { storeId: string; store: string; used: number; capacity: number; date: string }[]
+  storeStyleQuality: StoreStyleQuality[]
+  appealByStyle: { styleId: string; style: string; count: number }[]
+  appealTotal: number
 }
 
-export type { Account, Catalog, Order, StoreInfo, ServiceCase }
+export type { Account, Catalog, Order, StoreInfo, ServiceCase, Coupon, AppealVerdict, AppealResponsibility, AppealReasonCode }

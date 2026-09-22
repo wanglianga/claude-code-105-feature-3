@@ -5,6 +5,10 @@ import {
   STATUS_STYLE, STATUS_TEXT, PAY_TEXT, CASE_STATUS, fmtDateTime, fmtDate
 } from '../../components/ui'
 import type { Order, ServiceCase } from '../../../shared/types'
+import {
+  APPEAL_VERDICT_LABEL, APPEAL_REASON_LABEL, RESPONSIBILITY_LABEL
+} from '../../../shared/types'
+import AppealVerdictModal from './AppealVerdictModal'
 
 const KIND_CN: Record<string, string> = {
   date_change: '临时改期', sensitive_inscription: '敏感题字', fruit_shortage: '原料缺货',
@@ -114,24 +118,73 @@ export default function CSOrderDetail({ id, onBack }: { id: string; onBack: () =
 function CaseBlock({ o, c }: { o: Order; c: ServiceCase }) {
   const { act, openOrder } = useStore()
   const [propose, setPropose] = useState(false)
+  const [verdict, setVerdict] = useState(false)
+  const isAppeal = c.kind === 'after_sale'
+  const active = ['open', 'awaiting_customer'].includes(c.status)
   return (
-    <div className="card" style={{ padding: 12, borderLeft: ['open', 'awaiting_customer'].includes(c.status) ? '3px solid var(--danger)' : undefined }}>
+    <div className="card" style={{ padding: 12, borderLeft: active ? '3px solid var(--danger)' : undefined }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <b>{KIND_CN[c.kind]} · {fmtDateTime(c.raisedAt)}</b>
+        <b>{isAppeal && c.reasonCode ? `🛟 ${APPEAL_REASON_LABEL[c.reasonCode]}` : KIND_CN[c.kind]} · {fmtDateTime(c.raisedAt)}</b>
         <Badge kind={CASE_STATUS[c.status].c}>{CASE_STATUS[c.status].t}</Badge>
       </div>
       <div className="small mt8">{c.detail}</div>
-      {c.proposal && <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
+
+      {/* 造型申诉：证据对比 + 责任/结论 */}
+      {isAppeal && (
+        <div className="mt8">
+          <div className="chips">
+            <Badge kind={c.transportMode === 'cold_chain' ? 'blue' : 'orange'}>
+              {c.transportMode === 'cold_chain' ? '冷链保温袋自提' : '常温自提'}
+            </Badge>
+            <Badge kind="gray">签收 {fmtDateTime(c.signedAt || o.pickedUpAt)}</Badge>
+            {c.decision && <Badge kind={c.decision.responsibility === 'store' ? 'red' : 'orange'}>{RESPONSIBILITY_LABEL[c.decision.responsibility]}</Badge>}
+          </div>
+          {c.transportNote && <div className="tiny muted mt8">顾客自述离店运输：{c.transportNote}</div>}
+          <div className="grid cols-3 mt8" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
+            <MiniImg src={o.cake.styleRefPhoto} label="下单参考图" />
+            <MiniImg src={o.photos.final} label="门店成品照" />
+            <MiniImg src={c.evidencePhoto} label="顾客证据" danger />
+          </div>
+          {c.decision && (
+            <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
+              <b>判定结论：{APPEAL_VERDICT_LABEL[c.decision.verdict]}</b>
+              {c.decision.transportDeformation && <Badge kind="orange">运输变形</Badge>}
+              <div className="tiny muted mt8">{c.resolution}</div>
+              {c.decision.internalNote && <div className="tiny" style={{ color: 'var(--ink-2)' }}>内部备注：{c.decision.internalNote}</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {c.proposal && !isAppeal && <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
         方案：{c.proposal.desc}（{c.proposal.feeAdjust < 0 ? `退 ¥${-c.proposal.feeAdjust}` : c.proposal.feeAdjust > 0 ? `收 ¥${c.proposal.feeAdjust}` : '无费用调整'}）— {c.proposal.by}
       </div>}
       {c.customerNote && <div className="tiny mt8">顾客留言：{c.customerNote}</div>}
-      {c.evidencePhoto && <img className="photo-thumb mt8" style={{ maxWidth: 200 }} src={c.evidencePhoto} />}
+      {!isAppeal && c.evidencePhoto && <img className="photo-thumb mt8" style={{ maxWidth: 200 }} src={c.evidencePhoto} />}
       <div className="row mt8" style={{ gap: 6 }}>
-        {['open', 'awaiting_customer'].includes(c.status) && <button className="btn sm primary" onClick={() => setPropose(true)}>给出/修改方案</button>}
+        {isAppeal && active && !c.decision &&
+          <button className="btn sm primary" onClick={() => setVerdict(true)}>🔍 证据对比并判定（退款/补做/优惠券/拒绝）</button>}
+        {!isAppeal && active && <button className="btn sm primary" onClick={() => setPropose(true)}>给出/修改方案</button>}
         {['resolved', 'rejected'].includes(c.status) &&
           <button className="btn sm" onClick={async () => act(o.id, 'cs_close', { caseId: c.id, note: '处理完成，归档' })}>归档</button>}
       </div>
-      {propose && <QuickPropose o={o} c={c} onClose={() => setPropose(false)} onSent={() => { setPropose(false); openOrder(o.id) }} />}
+      {propose && !isAppeal && <QuickPropose o={o} c={c} onClose={() => setPropose(false)} onSent={() => { setPropose(false); openOrder(o.id) }} />}
+      {verdict && <AppealVerdictModal o={o} c={c} onClose={() => setVerdict(false)} />}
+    </div>
+  )
+}
+
+function MiniImg({ src, label, danger }: { src?: string; label: string; danger?: boolean }) {
+  const [big, setBig] = useState(false)
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {src
+        ? <img src={src} className="photo-thumb" style={{ width: '100%', aspectRatio: '4/3', objectFit: 'cover', cursor: 'zoom-in', border: danger ? '2px solid var(--danger)' : undefined }} onClick={() => setBig(true)} />
+        : <div className="photo-thumb" style={{ width: '100%', aspectRatio: '4/3', display: 'grid', placeItems: 'center' }}><span className="tiny muted">无</span></div>}
+      <div className="tiny muted">{label}</div>
+      {big && <div className="modal-mask" onMouseDown={e => e.target === e.currentTarget && setBig(false)}>
+        <img src={src} style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: 12 }} />
+      </div>}
     </div>
   )
 }

@@ -116,6 +116,13 @@ app.post('/api/orders/:id/action', auth(), (req, res) => {
       case 'open_after_sale':
         assertRole(acc, 'customer'); assertOwner(acc, o)
         return res.json(go(() => eng.openAfterSale(o, payload as any, acc)))
+      case 'after_sale_verdict':
+        assertRole(acc, 'cs')
+        return res.json(go(() => eng.afterSaleVerdict(o, payload.caseId, payload as any, acc)))
+      case 'remake_action':
+        if (acc.role === 'customer' || acc.role === 'cs') { const e = new eng.ActionError('当前角色无权推进补做排班'); e.status = 403; throw e }
+        assertStore(acc, o)
+        return res.json(go(() => eng.remakeAction(o, payload.remakeId, payload.step, acc)))
       case 'customer_request_change':
         assertRole(acc, 'customer'); assertOwner(acc, o)
         return res.json(go(() => eng.customerRequestChange(o, payload.kind, payload.detail, payload.wish || {}, acc)))
@@ -166,6 +173,16 @@ app.post('/api/stock/:storeId', auth(['baker', 'front', 'cs']), (req, res) => {
   state.stock[req.params.storeId] = { ...(state.stock[req.params.storeId] || {}), ...req.body }
   saveState()
   res.json({ ok: true })
+})
+
+// ---- 优惠券账户（造型申诉赔付）----
+app.get('/api/coupons', auth(), (req, res) => {
+  const acc = (req as any).account as Account
+  const state = getState()
+  const list = acc.role === 'customer'
+    ? state.coupons.filter(c => c.customerPhone === acc.phone)
+    : state.coupons
+  res.json({ coupons: list })
 })
 
 // ---- 复盘看板 ----

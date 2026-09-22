@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ActionError = void 0;
+exports.APPEAL_REASON_CODES = exports.ActionError = void 0;
 exports.nowIso = nowIso;
 exports.orderTotal = orderTotal;
 exports.fridgeUsage = fridgeUsage;
@@ -28,6 +28,8 @@ exports.reportFridge = reportFridge;
 exports.uploadPhotos = uploadPhotos;
 exports.customerRequestChange = customerRequestChange;
 exports.openAfterSale = openAfterSale;
+exports.afterSaleVerdict = afterSaleVerdict;
+exports.remakeAction = remakeAction;
 exports.analytics = analytics;
 exports.fmt = fmt;
 const store_1 = require("./store");
@@ -133,7 +135,7 @@ function createOrder(input, actor) {
         cake: input.cake,
         price: { base, addons, coldChain, total: base + addons + coldChain },
         paidAmount: 0,
-        fees: [], timeline: [], cases: [], reworks: [], photos: {},
+        fees: [], timeline: [], cases: [], reworks: [], remakes: [], photos: {},
         afterSalesHours: 24,
         version: 1
     };
@@ -427,21 +429,236 @@ function customerRequestChange(o, kind, detail, wish, actor) {
     }
     (0, store_1.saveState)();
 }
-// ---------- 售后 ----------
+// ---------- 售后：取货后造型申诉 ----------
+exports.APPEAL_REASON_CODES = [
+    'style_mismatch', 'inscription_wrong', 'ingredient_mismatch',
+    'transport_deformation', 'packaging_damage', 'food_issue', 'other'
+];
 function openAfterSale(o, r, actor) {
-    if (o.status !== 'picked_up')
+    if (o.status !== 'picked_up' && o.status !== 'closed')
         throw new ActionError('只有已签收订单可以发起售后');
     const dl = afterSaleDeadline(o);
     if (Date.now() > new Date(dl).getTime())
         throw new ActionError(`售后窗口已于 ${fmt(dl)} 关闭`);
-    const styleIssue = /造型|不符|偏差|图案|公仔|手绘/.test(r.reason + r.detail);
-    raiseCase(o, 'after_sale', actor.name, `售后：${r.reason}`, {
+    if (o.cases.some(c => c.kind === 'after_sale' && ['open', 'awaiting_customer'].includes(c.status)))
+        throw new ActionError('该订单已有进行中的造型申诉，请勿重复提交');
+    const code = r.reasonCode || (/题字/.test(r.reason) ? 'inscription_wrong'
+        : /原料|水果/.test(r.reason) ? 'ingredient_mismatch'
+            : /运输|变形|挤压|融化|包装/.test(r.reason) ? 'transport_deformation'
+                : /造型|不符|偏差|图案|公仔|手绘/.test(r.reason + r.detail) ? 'style_mismatch' : 'other');
+    const styleIssue = ['style_mismatch', 'inscription_wrong'].includes(code);
+    const c = raiseCase(o, 'after_sale', actor.name, `取货后造型申诉：${r.reason}`, {
         styleId: styleIssue ? o.cake.styleId : undefined,
         detail: r.detail
     });
-    o.cases[0].evidencePhoto = r.evidencePhoto;
+    c.reasonCode = code;
+    c.transportMode = r.transportMode || (o.cake.needColdChain ? 'cold_chain' : 'ambient');
+    c.transportNote = r.transportNote || '';
+    c.signedAt = o.pickedUpAt;
+    c.evidencePhoto = r.evidencePhoto;
+    tl(o, {
+        actorRole: 'customer', actor: actorName(actor), type: 'after_sale',
+        text: `顾客取货后上传照片申诉「${r.reason}」；页面已并排比对下单参考图、门店成品照、签收时间与${c.transportMode === 'cold_chain' ? '冷链' : '常温'}运输方式`,
+        fields: [
+            `签收时间：${o.pickedUpAt ? fmt(o.pickedUpAt) : '—'}`,
+            `运输方式：${c.transportMode === 'cold_chain' ? '冷链保温袋自提' : '常温自提'}${r.transportNote ? '；' + r.transportNote : ''}`
+        ]
+    });
     (0, store_1.saveState)();
 }
+// ---------- 售后判定：退款 / 补做 / 优惠券 / 拒绝 ----------
+function afterSaleVerdict(o, caseId, body, actor) {
+    const c = mustCase(o, caseId);
+    if (c.kind !== 'after_sale')
+        throw new ActionError('该工单不是取货后造型申诉');
+    if (!['open', 'awaiting_customer', 'resolved', 'rejected'].includes(c.status))
+        throw new ActionError('该工单已关闭归档，无法再判定');
+    if (c.decision)
+        throw new ActionError('该申诉已有判定结论，如需更改请先关闭后重新发起');
+    const reasonCode = c.reasonCode || 'style_mismatch';
+    // 责任一致性：勾选“运输造成变形”时，需区分门店交付责任与顾客自提运输责任
+    const resp = body.transportDeformation && !body.responsibility
+        ? 'self_pickup' : body.responsibility;
+    const decision = {
+        verdict: body.verdict,
+        responsibility: resp,
+        transportDeformation: !!body.transportDeformation,
+        reasonCode,
+        note: body.note,
+        internalNote: body.internalNote,
+        by: actorName(actor),
+        at: nowIso()
+    };
+    const respText = resp === 'store' ? '门店责任' : '顾客自提责任';
+    const respReason = body.transportDeformation
+        ? `变形发生在运输环节，经证据比对判定为${respText}`
+        : `经下单参考图 / 门店成品照 / 签收时间 / 运输方式比对，判定为${respText}`;
+    if (body.verdict === 'refund') {
+        const amount = Math.max(0, Math.round(Number(body.refundAmount) || 0));
+        if (amount <= 0)
+            throw new ActionError('退款金额需大于 0');
+        if (amount > o.paidAmount)
+            throw new ActionError(`退款金额不能超过实付 ¥${o.paidAmount}`);
+        applyRefund(o, c, amount, actor, respText, body.note);
+        decision.refundAmount = amount;
+        c.status = 'resolved';
+        c.resolution = `判定退款 ¥${amount}（${respReason}）：${body.note}`;
+        tl(o, {
+            actorRole: 'cs', actor: actorName(actor), type: 'after_sale',
+            text: `客服判定造型申诉成立→退款 ¥${amount}；${respReason}；结论计入门店造型质量统计`
+        });
+    }
+    else if (body.verdict === 'remake') {
+        const appt = scheduleRemake(o, c, {
+            pickupDate: body.remakeDate, slot: body.remakeSlot
+        }, actor, resp, respReason, body.note);
+        decision.remakePickupDate = appt.pickupDate;
+        decision.remakeSlot = appt.slot;
+        decision.remakeMakeStart = appt.makeStart;
+        c.status = 'resolved';
+        c.resolution = `判定补做（${respReason}）：重新排定制作 ${fmt(appt.makeStart)} 开始、${appt.pickupDate} ${appt.slot} 取货；${body.note}`;
+        tl(o, {
+            actorRole: 'cs', actor: actorName(actor), type: 'after_sale',
+            text: `客服判定造型申诉成立→门店免费补做；制作排班与取货时间已重新生成（${appt.pickupDate} ${appt.slot}）；${respReason}；计入门店造型质量统计`
+        });
+    }
+    else if (body.verdict === 'coupon') {
+        const amount = Math.max(0, Math.round(Number(body.couponAmount) || 0));
+        if (amount <= 0)
+            throw new ActionError('优惠券面额需大于 0');
+        const coupon = issueCoupon(o, c, amount, resp, reasonCode, actor);
+        decision.couponId = coupon.id;
+        c.status = 'resolved';
+        c.resolution = `判定发放优惠券 ¥${amount}（${respReason}）：${body.note}`;
+        tl(o, {
+            actorRole: 'cs', actor: actorName(actor), type: 'after_sale',
+            text: `客服判定造型申诉→优惠券 ¥${amount} 已进入顾客账户（券号 ${coupon.code}，关联原因：${coupon.reasonText}）；${respReason}；计入门店造型质量统计`
+        });
+    }
+    else {
+        // 拒绝赔付
+        c.status = 'rejected';
+        c.closedNote = body.note;
+        c.resolution = `拒绝赔付（${respReason}）：${body.note}`;
+        tl(o, {
+            actorRole: 'cs', actor: actorName(actor), type: 'after_sale',
+            text: `客服判定造型申诉不成立→拒绝赔付；${respReason}${body.transportDeformation ? '（运输变形，非门店造型/包装责任）' : ''}；结论计入门店造型质量统计`
+        });
+    }
+    c.decision = decision;
+    c.resolvedBy = actorName(actor);
+    c.resolvedAt = nowIso();
+    (0, store_1.saveState)();
+    return c;
+}
+function applyRefund(o, c, amount, actor, respText, note) {
+    const fee = {
+        id: uid('fee'), label: '取货后造型申诉退款', amount: -amount,
+        reason: `造型申诉成立（${respText}）：${note || c.title}`,
+        by: actorName(actor), at: nowIso(), caseId: c.id
+    };
+    o.fees.push(fee);
+    c.refundAmount = (Number(c.refundAmount) || 0) + amount;
+    o.paidAmount = Math.max(0, o.paidAmount - amount);
+    if (o.paidAmount === 0)
+        o.paymentStatus = 'refunded';
+    o.price.total = orderTotal(o);
+}
+// 补做：重新生成制作排班与取货时间
+function scheduleRemake(o, c, wish, actor, resp, respReason, note) {
+    const state = (0, store_1.getState)();
+    const cat = state.catalog;
+    // 默认取货：明天；时段沿用原单（可被 wish 覆盖）
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    const pickupDate = wish.pickupDate || d.toISOString().slice(0, 10);
+    const slot = wish.slot || o.slot;
+    // 制作开始：取货日时段开始前 2 小时（与裱花看板 SOP 一致）
+    const startHour = Number(slot.slice(0, 2));
+    const makeStart = (() => {
+        const dt = new Date(`${pickupDate}T${String(Math.max(8, startHour - 2)).padStart(2, '0')}:00:00`);
+        return dt.toISOString();
+    })();
+    // 容量校验（补做占用次日冷柜）
+    const size = cat.sizes.find(s => s.id === o.cake.sizeId);
+    const store = state.stores.find(s => s.id === o.storeId);
+    const used = fridgeUsage(state, o.storeId, pickupDate, false);
+    if (used + (size?.units || 1) > store.fridgeCapacity) {
+        throw new ActionError(`${pickupDate} 冷柜容量不足（已占 ${used}/${store.fridgeCapacity}），请改选其他补做取货日期或时段`);
+    }
+    const appt = {
+        id: uid('rm'), caseId: c.id, reasonCode: c.reasonCode || 'style_mismatch',
+        responsibility: resp,
+        pickupDate, slot, makeStart, status: 'scheduled',
+        note: `售后免费补做：${note || c.title}（${respReason}）`,
+        createdAt: nowIso()
+    };
+    o.remakes.unshift(appt);
+    return appt;
+}
+// 门店推进补做排班
+function remakeAction(o, remakeId, step, actor) {
+    const appt = o.remakes.find(r => r.id === remakeId);
+    if (!appt)
+        throw new ActionError('补做排班不存在');
+    if (step === 'materials') {
+        appt.status = 'materials';
+        appt.materialsReadyAt = nowIso();
+        tl(o, { actorRole: 'baker', actor: actorName(actor), type: 'production', text: `补做单 ${appt.id} 原料准备完成（${appt.pickupDate} ${appt.slot} 取）` });
+    }
+    else if (step === 'start') {
+        appt.status = 'producing';
+        appt.makeStart = nowIso();
+        tl(o, { actorRole: 'baker', actor: actorName(actor), type: 'production', text: `补做单 ${appt.id} 开始裱花制作（售后免费补做）` });
+    }
+    else if (step === 'ready') {
+        appt.status = 'ready';
+        appt.readyAt = nowIso();
+        tl(o, { actorRole: 'baker', actor: actorName(actor), type: 'photo', text: `补做单 ${appt.id} 成品完成，等待顾客到店取货` });
+    }
+    else if (step === 'pickup') {
+        appt.status = 'picked_up';
+        appt.pickedUpAt = nowIso();
+        tl(o, { actorRole: 'front', actor: actorName(actor), type: 'pickup', text: `补做单 ${appt.id} 顾客已取货签收，售后补做闭环` });
+    }
+    (0, store_1.saveState)();
+}
+// 优惠券：进入顾客账户并关联本次申诉原因
+function issueCoupon(o, c, amount, resp, reasonCode, actor) {
+    const state = (0, store_1.getState)();
+    const expire = new Date();
+    expire.setDate(expire.getDate() + 90);
+    const reasonText = APPEAL_REASON_TEXT[reasonCode];
+    const coupon = {
+        id: uid('cp'),
+        code: (0, store_1.nextCouponCode)(),
+        customerPhone: o.customer.phone,
+        customerName: o.customer.contactName,
+        amount,
+        title: `造型关怀券 ¥${amount}`,
+        reasonCode,
+        reasonText,
+        orderId: o.id,
+        caseId: c.id,
+        storeId: o.storeId,
+        responsibility: resp,
+        status: 'issued',
+        issuedAt: nowIso(),
+        expireAt: expire.toISOString(),
+        issuedBy: actorName(actor)
+    };
+    state.coupons.unshift(coupon);
+    return coupon;
+}
+const APPEAL_REASON_TEXT = {
+    style_mismatch: '取货后造型与下单参考不符',
+    inscription_wrong: '题字错误',
+    ingredient_mismatch: '原料/水果与订单不符',
+    transport_deformation: '运输途中蛋糕变形',
+    packaging_damage: '包装破损或融化',
+    food_issue: '食用后不适',
+    other: '其他造型售后'
+};
 // ---------- 复盘聚合 ----------
 function analytics(state) {
     const styleName = new Map(state.catalog.styles.map(s => [s.id, s.name]));
@@ -477,6 +694,40 @@ function analytics(state) {
     for (const o of state.orders)
         for (const c of o.cases)
             casesByKind[c.kind] = (casesByKind[c.kind] || 0) + 1;
+    // —— 门店造型质量统计（取货后造型申诉判定结论）——
+    const appeals = state.orders.flatMap(o => o.cases.filter(c => c.kind === 'after_sale' && c.decision).map(c => ({ o, c })));
+    const styleQuality = state.stores.map(s => {
+        const rows = appeals.filter(({ o }) => o.storeId === s.id);
+        const total = rows.length;
+        const storeResp = rows.filter(({ c }) => c.decision.responsibility === 'store').length;
+        const selfResp = rows.filter(({ c }) => c.decision.responsibility === 'self_pickup').length;
+        const verdicts = { refund: 0, remake: 0, coupon: 0, reject: 0 };
+        let refundSum = 0, couponSum = 0, transportDeform = 0;
+        const byReason = {};
+        for (const { c } of rows) {
+            verdicts[c.decision.verdict] += 1;
+            if (c.decision.verdict === 'refund')
+                refundSum += c.decision.refundAmount || 0;
+            if (c.decision.verdict === 'coupon') {
+                const cp = state.coupons.find(x => x.id === c.decision.couponId);
+                couponSum += cp?.amount || 0;
+            }
+            if (c.decision.transportDeformation)
+                transportDeform += 1;
+            byReason[c.decision.reasonCode] = (byReason[c.decision.reasonCode] || 0) + 1;
+        }
+        return {
+            storeId: s.id, store: s.name, total, storeResp, selfResp,
+            verdicts, refundSum, couponSum, transportDeform, byReason,
+            storeFaultRate: total ? storeResp / total : 0
+        };
+    });
+    // 造型维度：哪些造型被申诉（造型质量）
+    const appealByStyle = new Map();
+    for (const { c } of appeals) {
+        if (c.styleId)
+            appealByStyle.set(c.styleId, (appealByStyle.get(c.styleId) || 0) + 1);
+    }
     const afterCases = state.orders.flatMap(o => o.cases.filter(c => c.kind === 'after_sale'));
     const today = new Date().toISOString().slice(0, 10);
     const fridgeToday = state.stores.map(s => ({
@@ -489,7 +740,12 @@ function analytics(state) {
             .sort((a, b) => b.count - a.count),
         heat, casesByKind,
         afterSaleRate: afterCases.length ? afterCases.filter(c => ['resolved', 'closed'].includes(c.status)).length / afterCases.length : 0,
-        fridgeToday
+        fridgeToday,
+        storeStyleQuality: styleQuality,
+        appealByStyle: [...appealByStyle.entries()].map(([styleId, count]) => ({
+            styleId, style: styleName.get(styleId) || styleId, count
+        })).sort((a, b) => b.count - a.count),
+        appealTotal: appeals.length
     };
 }
 function fmt(iso) {

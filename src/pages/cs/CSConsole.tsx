@@ -6,6 +6,10 @@ import {
 } from '../../components/ui'
 import type { Order, ServiceCase, CaseKind } from '../../../shared/types'
 import AnalyticsView from './Analytics'
+import AppealVerdictModal from './AppealVerdictModal'
+import {
+  APPEAL_VERDICT_LABEL, APPEAL_REASON_LABEL, RESPONSIBILITY_LABEL
+} from '../../../shared/types'
 
 const CASE_ICON: Record<CaseKind, string> = {
   date_change: '📅', sensitive_inscription: '✍️', fruit_shortage: '🍓',
@@ -100,13 +104,16 @@ export default function CSConsole({ onOpen }: { onOpen: (id: string) => void }) 
 
 function CaseCard({ o, c, onOpen }: { o: Order; c: ServiceCase; onOpen: (id: string) => void }) {
   const [propose, setPropose] = useState(false)
+  const [verdict, setVerdict] = useState(false)
   const [detail, setDetail] = useState(false)
   const { act } = useStore()
   const active = ['open', 'awaiting_customer'].includes(c.status)
+  const isAppeal = c.kind === 'after_sale'
+  const decidable = isAppeal && active && !c.decision
   return (
     <div className="card" style={{ borderLeft: active ? '3px solid var(--danger)' : undefined }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h3 style={{ margin: 0 }}>{CASE_ICON[c.kind]} {KIND_NAME[c.kind]}</h3>
+        <h3 style={{ margin: 0 }}>{CASE_ICON[c.kind]} {isAppeal && c.reasonCode ? APPEAL_REASON_LABEL[c.reasonCode] : KIND_NAME[c.kind]}</h3>
         <Badge kind={CASE_STATUS[c.status].c}>{CASE_STATUS[c.status].t}</Badge>
       </div>
       <button className="btn sm ghost mt8" style={{ padding: 0 }} onClick={() => onOpen(o.id)}>
@@ -114,7 +121,11 @@ function CaseCard({ o, c, onOpen }: { o: Order; c: ServiceCase; onOpen: (id: str
       </button>
       <div className="small mt8">{c.title}</div>
       <div className="tiny muted mt8 line-clamp">{c.detail}</div>
-      {c.proposal && (
+
+      {/* 已判定的造型申诉结论 */}
+      {isAppeal && c.decision && <AppealDecisionTag o={o} c={c} />}
+
+      {c.proposal && !isAppeal && (
         <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
           已发方案：{c.proposal.desc}
           {c.proposal.feeAdjust !== 0 && <b style={{ color: c.proposal.feeAdjust < 0 ? 'var(--ok)' : 'var(--danger)' }}>
@@ -122,16 +133,22 @@ function CaseCard({ o, c, onOpen }: { o: Order; c: ServiceCase; onOpen: (id: str
           </b>}
         </div>
       )}
-      {c.status === 'resolved' && c.resolvedBy && <div className="tiny muted mt8">✓ 顾客 {fmtDateTime(c.resolvedAt!)} 确认，{c.resolvedBy} 经办</div>}
+      {c.status === 'resolved' && c.resolvedBy && !c.decision && <div className="tiny muted mt8">✓ 顾客 {fmtDateTime(c.resolvedAt!)} 确认，{c.resolvedBy} 经办</div>}
       <div className="row mt12" style={{ gap: 6 }}>
-        {active && <>
-          <button className="btn sm primary" onClick={() => setPropose(true)}>{c.status === 'awaiting_customer' ? '修改方案' : '给出处理方案'}</button>
-          {c.kind === 'after_sale' || c.kind === 'fruit_shortage' ?
-            <button className="btn sm danger" onClick={async () => {
-              const note = prompt('驳回原因（将告知顾客）')
-              if (note) act(o.id, 'cs_reject', { caseId: c.id, note })
-            }}>驳回</button> : null}
-        </>}
+        {decidable &&
+          <button className="btn sm primary" onClick={() => setVerdict(true)}>🔍 证据对比并判定</button>}
+        {active && !isAppeal &&
+          <button className="btn sm primary" onClick={() => setPropose(true)}>{c.status === 'awaiting_customer' ? '修改方案' : '给出处理方案'}</button>}
+        {!isAppeal && (c.kind === 'fruit_shortage') && active &&
+          <button className="btn sm danger" onClick={async () => {
+            const note = prompt('驳回原因（将告知顾客）')
+            if (note) act(o.id, 'cs_reject', { caseId: c.id, note })
+          }}>驳回</button>}
+        {isAppeal && active &&
+          <button className="btn sm danger" onClick={async () => {
+            const note = prompt('拒绝赔付原因（将告知顾客）')
+            if (note) act(o.id, 'cs_reject', { caseId: c.id, note })
+          }}>快速驳回</button>}
         {['resolved', 'rejected'].includes(c.status) &&
           <button className="btn sm" onClick={async () => {
             const note = prompt('关闭备注') || '处理完成，归档'
@@ -139,8 +156,32 @@ function CaseCard({ o, c, onOpen }: { o: Order; c: ServiceCase; onOpen: (id: str
           }}>归档关闭</button>}
         <button className="btn sm ghost" onClick={() => setDetail(true)}>证据/详情</button>
       </div>
-      {propose && <ProposeModal o={o} c={c} onClose={() => setPropose(false)} />}
+      {propose && !isAppeal && <ProposeModal o={o} c={c} onClose={() => setPropose(false)} />}
+      {verdict && <AppealVerdictModal o={o} c={c} onClose={() => setVerdict(false)} />}
       {detail && <CaseEvidence o={o} c={c} onClose={() => setDetail(false)} />}
+    </div>
+  )
+}
+
+function AppealDecisionTag({ o, c }: { o: Order; c: ServiceCase }) {
+  const d = c.decision!
+  const color = d.verdict === 'reject' ? 'gray' : d.responsibility === 'store' ? 'red' : 'orange'
+  return (
+    <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
+      <div className="row" style={{ gap: 6 }}>
+        <Badge kind={d.verdict === 'refund' ? 'green' : d.verdict === 'remake' ? 'violet' : d.verdict === 'coupon' ? 'blue' : 'gray'}>
+          结论：{APPEAL_VERDICT_LABEL[d.verdict]}
+        </Badge>
+        <Badge kind={color}>{RESPONSIBILITY_LABEL[d.responsibility]}</Badge>
+        {d.transportDeformation && <Badge kind="orange">运输变形</Badge>}
+      </div>
+      <div className="tiny muted mt8">
+        {d.verdict === 'refund' && `退款 ¥${d.refundAmount}`}
+        {d.verdict === 'remake' && `补做取货 ${d.remakePickupDate} ${d.remakeSlot}`}
+        {d.verdict === 'coupon' && `优惠券已入账（${c.resolution?.match(/¥\d+/)?.[0] || ''}）`}
+        {d.verdict === 'reject' && '不予赔付'}
+        {' · '}{fmtDateTime(d.at)} · {d.by}
+      </div>
     </div>
   )
 }

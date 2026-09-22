@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api, setToken, clearToken, type Bootstrap, type Order, type Derived, type Analytics } from './api'
-import type { Account, Catalog, StoreInfo } from '../shared/types'
+import type { Account, Catalog, StoreInfo, Coupon } from '../shared/types'
 
 interface Toast { id: number; kind: 'ok' | 'err' | 'info'; text: string }
 
@@ -10,6 +10,7 @@ interface Store {
   orders: Order[]
   current?: { order: Order; derived: Derived }
   analytics: Analytics | null
+  coupons: Coupon[]
   toasts: Toast[]
   busy: boolean
 
@@ -22,6 +23,7 @@ interface Store {
   act: (id: string, action: string, payload?: any, opts?: { silent?: boolean }) => Promise<Order | null>
   createOrder: (body: any) => Promise<Order>
   loadAnalytics: () => Promise<void>
+  loadCoupons: () => Promise<Coupon[]>
   setStock: (storeId: string, body: Record<string, 'ok' | 'low' | 'out'>) => Promise<void>
   toast: (text: string, kind?: Toast['kind']) => void
   resetDemo: () => Promise<void>
@@ -34,6 +36,7 @@ export const useStore = create<Store>((set, get) => ({
   boot: null,
   orders: [],
   analytics: null,
+  coupons: [],
   toasts: [],
   busy: false,
 
@@ -51,7 +54,7 @@ export const useStore = create<Store>((set, get) => ({
 
   logout: () => {
     clearToken()
-    set({ account: null, orders: [], current: undefined, analytics: null })
+    set({ account: null, orders: [], current: undefined, analytics: null, coupons: [] })
   },
 
   init: async () => {
@@ -107,6 +110,12 @@ export const useStore = create<Store>((set, get) => ({
   loadAnalytics: async () => {
     const analytics = await api.analytics()
     set({ analytics })
+  },
+
+  loadCoupons: async () => {
+    const { coupons } = await api.coupons()
+    set({ coupons })
+    return coupons
   },
 
   setStock: async (storeId, body) => {

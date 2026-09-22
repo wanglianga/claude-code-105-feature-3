@@ -11,6 +11,7 @@ exports.login = login;
 exports.me = me;
 exports.nextOrderNo = nextOrderNo;
 exports.nextPickupCode = nextPickupCode;
+exports.nextCouponCode = nextCouponCode;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const seed_1 = require("./seed");
@@ -22,6 +23,12 @@ function loadState() {
         if (fs_1.default.existsSync(DB_FILE)) {
             const raw = JSON.parse(fs_1.default.readFileSync(DB_FILE, 'utf-8'));
             if (raw && raw.orders && raw.catalog) {
+                // 向前兼容：补全新增集合
+                if (!Array.isArray(raw.coupons))
+                    raw.coupons = [];
+                for (const o of raw.orders)
+                    if (!Array.isArray(o.remakes))
+                        o.remakes = [];
                 state = raw;
                 return state;
             }
@@ -90,6 +97,15 @@ function nextPickupCode() {
     const used = new Set(state.orders.map(o => o.pickupCode));
     for (;;) {
         const code = String(1000 + Math.floor(Math.random() * 9000));
+        if (!used.has(code))
+            return code;
+    }
+}
+function nextCouponCode() {
+    const used = new Set((state.coupons || []).map(c => c.code));
+    for (;;) {
+        const n = 100000 + Math.floor(Math.random() * 900000);
+        const code = `SQ${n}`;
         if (!used.has(code))
             return code;
     }

@@ -5,7 +5,8 @@ import {
   STATUS_STYLE, STATUS_TEXT, PAY_TEXT, CASE_STATUS, fmtDateTime, fmtDate, useCountdown
 } from '../../components/ui'
 import { sensitiveWords } from '../../price'
-import type { Order, ServiceCase } from '../../../shared/types'
+import type { Order, ServiceCase, AppealReasonCode } from '../../../shared/types'
+import { APPEAL_VERDICT_LABEL, APPEAL_REASON_LABEL, RESPONSIBILITY_LABEL } from '../../../shared/types'
 
 const CASE_ICON: Record<string, string> = {
   date_change: '📅', sensitive_inscription: '✍️', fruit_shortage: '🍓',
@@ -153,9 +154,15 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
                     : <>售后窗口已结束。</>}
                 </Notice>
                 {afterCd && !afterCd.over &&
-                  <button className="btn danger mt12" onClick={() => setShowAfterSale(true)}>发起售后（造型不符等）</button>}
+                  <button className="btn danger mt12" onClick={() => setShowAfterSale(true)}>发起造型申诉（上传照片）</button>}
               </>
             )}
+            {o.cases.some(c => c.kind === 'after_sale') && (
+              <div className="grid mt12" style={{ gap: 8 }}>
+                {o.cases.filter(c => c.kind === 'after_sale').map(c => <AppealTrack key={c.id} c={c} o={o} />)}
+              </div>
+            )}
+            {o.remakes.length > 0 && <RemakeTrack o={o} />}
             {o.status === 'closed' && <div className="small muted">售后窗口已关闭，感谢惠顾。历史工单与证据仍可在订单动态中查看。</div>}
             {['pending_accept', 'accepted', 'producing'].includes(o.status) &&
               <div className="small muted">门店制作进度会实时同步；制作中如遇缺货/冷柜问题，客服会在此联系您确认。</div>}
@@ -316,23 +323,71 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
   }
 
   function AfterSaleModal() {
-    const [reason, setReason] = useState('造型与参考图不符')
+    const [reason, setReason] = useState<AppealReasonCode>('style_mismatch')
     const [detail, setDetail] = useState('')
     const [photo, setPhoto] = useState<string | undefined>()
+    const [transportMode, setTransportMode] = useState<'cold_chain' | 'ambient'>(o.cake.needColdChain ? 'cold_chain' : 'ambient')
+    const [transportNote, setTransportNote] = useState('')
+    const reasonOptions: [AppealReasonCode, string][] = [
+      ['style_mismatch', '造型与参考图不符'],
+      ['inscription_wrong', '题字错误'],
+      ['ingredient_mismatch', '原料/水果与订单不符'],
+      ['transport_deformation', '运输途中变形'],
+      ['packaging_damage', '包装破损或融化'],
+      ['food_issue', '食用后不适'],
+      ['other', '其他']
+    ]
     return (
-      <Modal title="发起售后" onClose={() => setShowAfterSale(false)}
+      <Modal title="取货后造型申诉" onClose={() => setShowAfterSale(false)} wide
         footer={<button className="btn danger" disabled={!detail.trim() || !photo} onClick={async () => {
-          const r = await act(o.id, 'open_after_sale', { reason, detail, evidencePhoto: photo })
+          const r = await act(o.id, 'open_after_sale', {
+            reason: reasonOptions.find(x => x[0] === reason)?.[1], reasonCode: reason,
+            detail, evidencePhoto: photo, transportMode, transportNote
+          })
           if (r) { setShowAfterSale(false); openOrder(o.id) }
-        }}>提交售后申请</button>}>
-        <Notice kind="info" title="请尽量上传取货时照片作为证据">客服将依据成品照片、包装照片与您的证据协商重做/补偿/退款，所有记录落回原订单。</Notice>
+        }}>上传照片并提交申诉</button>}>
+        <Notice kind="info" title="页面将自动为客服并排呈现以下材料">
+          您的<b>下单参考图</b>、门店<b>成品照 / 包装照</b>、<b>签收时间</b>与<b>运输方式</b>，连同本次上传的照片一起比对；客服据此判定退款、补做、优惠券或拒绝，并区分门店责任与自提运输责任。
+        </Notice>
+
+        {/* 申诉前可先核对的对比材料 */}
+        <div className="grid cols-3 mt12" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
+          <CustomerCmp label="我的下单参考图" v={o.cake.styleRefPhoto} empty="未上传参考图（以造型备注为准）" />
+          <CustomerCmp label="门店成品照" v={o.photos.final} empty="门店未留成品照" />
+          <CustomerCmp label="包装照 / 冷藏提示" v={o.photos.package || o.photos.coldNotice} empty="无" />
+        </div>
+        <div className="small muted mt8">
+          签收时间：{fmtDateTime(o.pickedUpAt)}（{o.afterSalesHours}h 售后窗口内）·
+          订单运输方式：{o.cake.needColdChain ? '含冷链（¥30）' : '常温'}
+        </div>
+
         <div className="field mt12"><label>问题类型</label>
-          <select className="input" value={reason} onChange={e => setReason(e.target.value)}>
-            {['造型与参考图不符', '题字错误', '原料/水果与订单不符', '包装破损或融化', '食用后不适', '其他']}
+          <select className="input" value={reason} onChange={e => setReason(e.target.value as AppealReasonCode)}>
+            {reasonOptions.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
           </select>
         </div>
-        <div className="field"><label>详细说明</label><textarea className="input" placeholder="请描述取货时间、现场情况、诉求（退款/补偿/重做）" value={detail} onChange={e => setDetail(e.target.value)} /></div>
-        <div style={{ maxWidth: 260 }}><FilePhoto label="上传问题照片（必传）" value={photo} onChange={setPhoto} /></div>
+
+        {reason === 'transport_deformation' && (
+          <div className="field">
+            <label>离店后的运输/保存方式（用于区分门店责任与自提责任）</label>
+            <div className="chips">
+              <button className={`chip ${transportMode === 'cold_chain' ? 'sel' : ''}`} onClick={() => setTransportMode('cold_chain')}>
+                ❄️ 使用门店冷链保温袋
+              </button>
+              <button className={`chip ${transportMode === 'ambient' ? 'sel' : ''}`} onClick={() => setTransportMode('ambient')}>
+                🚶 常温携带（步行/公交/自驾）
+              </button>
+            </div>
+            <input className="input mt8" value={transportNote}
+              placeholder="如：公交约 50 分钟、户外放置 2 小时、是否全程封口冷藏…"
+              onChange={e => setTransportNote(e.target.value)} />
+            <div className="tiny muted mt8">若变形来自离店后的高温/久置，可能判定为顾客自提责任；门店包装或冷藏提示不到位则为门店责任。</div>
+          </div>
+        )}
+
+        <div className="field"><label>详细说明</label>
+          <textarea className="input" placeholder="请描述取货时间、回家运输与保存情况、现场问题与诉求（退款/补做/优惠券）" value={detail} onChange={e => setDetail(e.target.value)} /></div>
+        <div style={{ maxWidth: 280 }}><FilePhoto label="上传问题照片（必传）" value={photo} onChange={setPhoto} /></div>
       </Modal>
     )
   }
@@ -363,6 +418,71 @@ function PhotoCell({ label, v }: { label: string; v?: string }) {
         <img src={v} style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: 12 }} />
       </div>}
     </>
+  )
+}
+
+function CustomerCmp({ label, v, empty }: { label: string; v?: string; empty: string }) {
+  const [big, setBig] = useState(false)
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {v
+        ? <img src={v} className="photo-thumb" style={{ width: '100%', aspectRatio: '4/3', objectFit: 'cover', cursor: 'zoom-in' }} onClick={() => setBig(true)} />
+        : <div className="photo-thumb" style={{ width: '100%', aspectRatio: '4/3', display: 'grid', placeItems: 'center' }}><span className="tiny muted">{empty}</span></div>}
+      <div className="tiny muted">{label}</div>
+      {big && v && <div className="modal-mask" onMouseDown={e => e.target === e.currentTarget && setBig(false)}>
+        <img src={v} style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: 12 }} />
+      </div>}
+    </div>
+  )
+}
+
+function AppealTrack({ o, c }: { o: Order; c: ServiceCase }) {
+  const d = c.decision
+  const pending = !d
+  return (
+    <div className="card" style={{ padding: 12, borderLeft: pending ? '3px solid var(--warn)' : '3px solid var(--brand)' }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <b>🛟 造型申诉{c.reasonCode ? `·${APPEAL_REASON_LABEL[c.reasonCode]}` : ''}</b>
+        <Badge kind={CASE_STATUS[c.status].c}>{CASE_STATUS[c.status].t}</Badge>
+      </div>
+      <div className="tiny muted mt8">发起 {fmtDateTime(c.raisedAt)} · 签收 {fmtDateTime(c.signedAt || o.pickedUpAt)} · 运输 {c.transportMode === 'cold_chain' ? '冷链' : '常温自提'}</div>
+      {pending
+        ? <div className="small mt8">客服正在核对下单参考图、门店成品照、签收时间与运输方式，请留意本页结论。</div>
+        : <div className="mt8">
+          <div className="chips">
+            <Badge kind={d!.verdict === 'refund' ? 'green' : d!.verdict === 'remake' ? 'violet' : d!.verdict === 'coupon' ? 'blue' : 'gray'}>
+              {APPEAL_VERDICT_LABEL[d!.verdict]}
+            </Badge>
+            <Badge kind={d!.responsibility === 'store' ? 'red' : 'orange'}>{RESPONSIBILITY_LABEL[d!.responsibility]}</Badge>
+            {d!.transportDeformation && <Badge kind="orange">运输环节变形</Badge>}
+          </div>
+          <div className="small mt8">{c.resolution}</div>
+          {d!.verdict === 'refund' && <div className="small mt8" style={{ color: 'var(--ok)' }}>💸 退款 ¥{d!.refundAmount} 已原路退回，费用流水见下方明细。</div>}
+          {d!.verdict === 'coupon' && <div className="small mt8" style={{ color: 'var(--brand-dark)' }}>🎟️ 优惠券已进入您的账户（顶部「优惠券账户」可查看，关联本次申诉原因）。</div>}
+          {d!.verdict === 'remake' && <div className="small mt8" style={{ color: 'var(--brand-dark)' }}>🎂 补做已重新排班：{fmtDate(d!.remakePickupDate!)} {d!.remakeSlot} 到店取货（见下方补做安排）。</div>}
+          {d!.verdict === 'reject' && <div className="tiny muted mt8">如对结论有异议，可联系客服补充证据再次沟通。</div>}
+        </div>}
+    </div>
+  )
+}
+
+function RemakeTrack({ o }: { o: Order }) {
+  const ST: Record<string, string> = {
+    scheduled: '已排班·待备料', materials: '备料完成', producing: '补做制作中', ready: '补做完成待取', picked_up: '已取货'
+  }
+  return (
+    <div className="card accent mt12">
+      <h3 style={{ marginTop: 0 }}>🎂 售后补做安排（免费）</h3>
+      {o.remakes.map(r => (
+        <div key={r.id} style={{ padding: '6px 0', borderBottom: '1px dashed var(--line)' }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <b>{fmtDate(r.pickupDate)} {r.slot} 取货</b>
+            <Badge kind={r.status === 'picked_up' ? 'green' : 'violet'}>{ST[r.status]}</Badge>
+          </div>
+          <div className="tiny muted mt8">制作开始：{fmtDateTime(r.makeStart)} · {r.note}</div>
+        </div>
+      ))}
+    </div>
   )
 }
 

@@ -117,12 +117,31 @@ function demoOrder(partial) {
         timeline: [],
         cases: [],
         reworks: [],
+        remakes: [],
         photos: {},
         afterSalesHours: 24,
         version: 1,
         ...partial
     };
 }
+// 演示用占位照片（SVG dataURL），用于售后证据对比
+function svgPhoto(label, bg, fg = '#ffffff') {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360">
+  <rect width="480" height="360" fill="${bg}"/>
+  <circle cx="240" cy="150" r="86" fill="#fff" opacity="0.92"/>
+  <circle cx="185" cy="120" r="10" fill="${bg}"/><circle cx="295" cy="120" r="10" fill="${bg}"/>
+  <path d="M190 175 Q240 215 290 175" stroke="${bg}" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <rect x="70" y="262" width="340" height="58" rx="10" fill="rgba(0,0,0,.28)"/>
+  <text x="240" y="300" font-size="28" fill="${fg}" text-anchor="middle" font-family="sans-serif">${label}</text>
+</svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+const PHOTO_FINAL_OK = svgPhoto('门店成品照·造型规范', '#7c5cff');
+const PHOTO_PACKAGE = svgPhoto('包装照片·封签完好', '#2bb673');
+const PHOTO_COLD = svgPhoto('冷藏提示卡 2-8℃', '#1e9be8');
+const PHOTO_EVIDENCE_BAD = svgPhoto('顾客证据·公仔头部变形', '#e8505b');
+const PHOTO_EVIDENCE_MELT = svgPhoto('顾客证据·奶油融化塌腰', '#f08c2e');
+const PHOTO_REF_GUIDE = svgPhoto('下单参考图', '#9b6bd8');
 exports.demoOrders = [
     demoOrder({
         id: 'OD1001',
@@ -206,7 +225,7 @@ exports.demoOrders = [
             sizeId: 's8', baseId: 'vanilla', creamId: 'animal',
             fillingIds: ['strawberry_jam'], fruitIds: ['strawberry'],
             avoidAllergenIds: [], allergenConfirmed: true,
-            styleId: 'drawing', styleNote: '库洛米手绘', styleRefPhoto: undefined,
+            styleId: 'drawing', styleNote: '库洛米手绘', styleRefPhoto: PHOTO_REF_GUIDE,
             inscription: 'Happy 30th', inscriptionApproved: true,
             candleId: 'fairy', candleCount: 1, tablewareSets: 8, needColdChain: true
         },
@@ -224,15 +243,192 @@ exports.demoOrders = [
         reworks: [
             { id: 'rw1', at: isoOffset(-1, 17), styleId: 'drawing', reason: '造型与参考图不符：库洛米配色偏差', note: '转印线条晕染，重新调色转印', cost: 35, by: '陈裱花' }
         ],
-        photos: {}
+        photos: { final: PHOTO_FINAL_OK, package: PHOTO_PACKAGE, coldNotice: PHOTO_COLD }
     })
 ];
+// —— 取货后造型申诉演示订单 ——
+function appealOrder(no) {
+    return demoOrder({
+        id: no.id,
+        pickupCode: no.code,
+        storeId: no.storeId,
+        pickupDate: dateOffset(no.pickupDaysAgo ?? no.daysAgo - 1),
+        slot: '18:00-20:00',
+        latestModifyAt: isoOffset(no.daysAgo - 2, 18),
+        status: 'picked_up',
+        paymentStatus: 'paid',
+        paidAmount: no.price,
+        pickedUpAt: isoOffset(no.daysAgo, no.hour, 12),
+        customer: {
+            contactName: no.contact, phone: no.phone,
+            birthdayPerson: { name: no.bpName, relation: no.bpRel },
+            invoice: { needed: false }
+        },
+        cake: {
+            sizeId: 's8', baseId: 'vanilla', creamId: 'animal',
+            fillingIds: ['mango'], fruitIds: ['strawberry'],
+            avoidAllergenIds: [], allergenConfirmed: true,
+            styleId: no.styleId, styleNote: no.styleNote, styleRefPhoto: PHOTO_REF_GUIDE,
+            inscription: no.inscription, inscriptionApproved: true,
+            candleId: 'digital', candleCount: 1, tablewareSets: 8, needColdChain: no.needCold,
+            ...no.cake
+        },
+        price: { base: 238, addons: no.price - 238 - (no.needCold ? 30 : 0), coldChain: no.needCold ? 30 : 0, total: no.price },
+        timeline: [
+            { id: 't1', at: isoOffset(no.daysAgo - 3, 10), actorRole: 'customer', actor: no.contact, type: 'created', text: '顾客提交订单' },
+            { id: 't2', at: isoOffset(no.daysAgo - 3, 10, 10), actorRole: 'front', actor: '前台', type: 'status', text: '门店接单' },
+            { id: 't3', at: isoOffset(no.daysAgo - 1, 16), actorRole: 'baker', actor: '陈裱花', type: 'photo', text: '上传成品照片、包装照片与冷藏提示卡' },
+            { id: 't4', at: isoOffset(no.daysAgo, no.hour, 12), actorRole: 'front', actor: '前台', type: 'pickup', text: `核验取货码 ${no.code}，顾客当面签收` }
+        ],
+        photos: { final: PHOTO_FINAL_OK, package: PHOTO_PACKAGE, coldNotice: no.needCold ? PHOTO_COLD : undefined }
+    });
+}
+// 进行中的申诉（顾客今日可见、等待客服判定；运输变形、常温自提 → 需区分责任）
+const openHour = Math.max(8, new Date().getHours() - 2);
+const OD1004 = appealOrder({
+    id: 'OD1004', code: '6620', daysAgo: 0, hour: openHour,
+    storeId: 'st_hd', phone: '13800000001', contact: '李小满', bpName: '李小满', bpRel: '本人',
+    styleId: '3d_doll', styleNote: '奥特曼立体公仔，红色为主', inscription: '小满 冲鸭',
+    needCold: false, price: 388, cake: {}, pickupDaysAgo: 0
+});
+OD1004.cases.unshift({
+    id: 'cs_open_appeal', kind: 'after_sale', status: 'open',
+    title: '取货后造型申诉：运输途中公仔变形',
+    raisedBy: '李小满', raisedAt: isoOffset(0, Math.min(22, openHour + 1)),
+    detail: '回家打开发现 3D 公仔头部歪到一侧、奶油有挤压痕迹。当天 35℃，我坐公交约 50 分钟到家，未要冷链袋。请核对门店成品照与我上传的照片。',
+    styleId: '3d_doll', reasonCode: 'transport_deformation',
+    transportMode: 'ambient', transportNote: '常温自提，公交约 50 分钟，无冷链保温袋',
+    signedAt: OD1004.pickedUpAt, evidencePhoto: PHOTO_EVIDENCE_MELT
+});
+OD1004.timeline.push({
+    id: 't5', at: isoOffset(0, Math.min(22, openHour + 1)), actorRole: 'customer', actor: '李小满', type: 'after_sale',
+    text: '顾客取货后上传照片申诉「运输途中公仔变形」；页面已并排比对下单参考图、门店成品照、签收时间与常温运输方式',
+    fields: [`签收时间：${OD1004.pickedUpAt ? new Date(OD1004.pickedUpAt).toLocaleString('zh-CN') : ''}`, '运输方式：常温自提，公交约 50 分钟']
+});
+// 已判定：退款 + 门店责任（造型不符）
+const OD1005 = appealOrder({
+    id: 'OD1005', code: '7711', daysAgo: 2, hour: 19, storeId: 'st_hd',
+    phone: '13800000002', contact: '周也', bpName: '小团子', bpRel: '儿子',
+    styleId: 'drawing', styleNote: '库洛米手绘，紫色系', inscription: '小团子 5 岁',
+    needCold: true, price: 366, cake: {}
+});
+OD1005.fees.push({
+    id: 'fee_ref1005', label: '取货后造型申诉退款', amount: -120,
+    reason: '造型申诉成立（门店责任）：手绘图案与参考图配色明显不符', by: '客服·甜小橙',
+    at: isoOffset(-2, 20), caseId: 'cs_dec_refund'
+});
+OD1005.paidAmount = 246;
+OD1005.cases.unshift({
+    id: 'cs_dec_refund', kind: 'after_sale', status: 'resolved',
+    title: '取货后造型申诉：造型与参考不符', raisedBy: '周也', raisedAt: isoOffset(-2, 19, 40),
+    detail: '手绘库洛米配色与参考图差异较大。', styleId: 'drawing',
+    reasonCode: 'style_mismatch', transportMode: 'cold_chain', signedAt: OD1005.pickedUpAt,
+    evidencePhoto: PHOTO_EVIDENCE_BAD, refundAmount: 120,
+    resolvedBy: '客服·甜小橙', resolvedAt: isoOffset(-2, 20),
+    resolution: '判定退款 ¥120（经下单参考图 / 门店成品照 / 签收时间 / 运输方式比对，判定为门店责任）：手绘配色偏差，部分退款',
+    decision: {
+        verdict: 'refund', responsibility: 'store', transportDeformation: false,
+        reasonCode: 'style_mismatch', note: '手绘配色偏差，部分退款', by: '客服·甜小橙',
+        at: isoOffset(-2, 20), refundAmount: 120
+    }
+});
+// 已判定：补做 + 门店责任（题字错误），已生成补做排班
+const OD1006 = appealOrder({
+    id: 'OD1006', code: '8833', daysAgo: 1, hour: 18, storeId: 'st_hd',
+    phone: '13800000001', contact: '李小满', bpName: '李奶奶', bpRel: '奶奶',
+    styleId: 'vintage', styleNote: '寿桃复古裱花', inscription: '福如东海',
+    needCold: true, price: 298, cake: { candleId: 'fairy' }
+});
+const remake1006 = {
+    id: 'rm1006', caseId: 'cs_dec_remake', reasonCode: 'inscription_wrong', responsibility: 'store',
+    pickupDate: dateOffset(1), slot: '14:00-16:00',
+    makeStart: (() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(12, 0, 0, 0); return d.toISOString(); })(),
+    status: 'scheduled', note: '售后免费补做：题字误写为“福入东海”（门店责任）',
+    createdAt: isoOffset(-1, 20)
+};
+OD1006.remakes = [remake1006];
+OD1006.cases.unshift({
+    id: 'cs_dec_remake', kind: 'after_sale', status: 'resolved',
+    title: '取货后造型申诉：题字错误', raisedBy: '李小满', raisedAt: isoOffset(-1, 18, 40),
+    detail: '题字写成“福入东海”，生日现场无法使用。', styleId: 'vintage',
+    reasonCode: 'inscription_wrong', transportMode: 'cold_chain', signedAt: OD1006.pickedUpAt,
+    evidencePhoto: PHOTO_EVIDENCE_BAD, resolvedBy: '客服·甜小橙', resolvedAt: isoOffset(-1, 20),
+    resolution: `判定补做（门店责任）：重新排定制作并于 ${dateOffset(1)} 14:00-16:00 取货；门店免费补做`,
+    decision: {
+        verdict: 'remake', responsibility: 'store', transportDeformation: false,
+        reasonCode: 'inscription_wrong', note: '门店免费补做', by: '客服·甜小橙',
+        at: isoOffset(-1, 20), remakePickupDate: dateOffset(1), remakeSlot: '14:00-16:00',
+        remakeMakeStart: remake1006.makeStart
+    }
+});
+OD1006.timeline.push({
+    id: 't5', at: isoOffset(-1, 20), actorRole: 'cs', actor: '客服·甜小橙', type: 'after_sale',
+    text: `客服判定造型申诉成立→门店免费补做；制作排班与取货时间已重新生成（${dateOffset(1)} 14:00-16:00）；门店责任；计入门店造型质量统计`
+});
+// 已判定：优惠券 + 门店责任（包装破损）
+const OD1007 = appealOrder({
+    id: 'OD1007', code: '9901', daysAgo: 3, hour: 12, storeId: 'st_cx',
+    phone: '13800000002', contact: '周也', bpName: '周也', bpRel: '本人',
+    styleId: 'classic_fruit', styleNote: '经典水果围边', inscription: '生日快乐',
+    needCold: false, price: 258, cake: { sizeId: 's6' }
+});
+const coupon1007 = {
+    id: 'cp1007', code: 'SQ200418', customerPhone: '13800000002', customerName: '周也',
+    amount: 50, title: '造型关怀券 ¥50', reasonCode: 'packaging_damage',
+    reasonText: '包装破损或融化', orderId: 'OD1007', caseId: 'cs_dec_coupon', storeId: 'st_cx',
+    responsibility: 'store', status: 'issued', issuedAt: isoOffset(-3, 13),
+    expireAt: (() => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString(); })(),
+    issuedBy: '客服·甜小橙'
+};
+OD1007.cases.unshift({
+    id: 'cs_dec_coupon', kind: 'after_sale', status: 'resolved',
+    title: '取货后造型申诉：包装破损', raisedBy: '周也', raisedAt: isoOffset(-3, 12, 30),
+    detail: '包装盒封签开裂，围边水果移位。', reasonCode: 'packaging_damage',
+    transportMode: 'ambient', signedAt: OD1007.pickedUpAt, evidencePhoto: PHOTO_EVIDENCE_BAD,
+    resolvedBy: '客服·甜小橙', resolvedAt: isoOffset(-3, 13),
+    resolution: '判定发放优惠券 ¥50（门店责任）：包装封签不牢，补偿关怀券',
+    decision: {
+        verdict: 'coupon', responsibility: 'store', transportDeformation: false,
+        reasonCode: 'packaging_damage', note: '包装封签不牢，补偿关怀券', by: '客服·甜小橙',
+        at: isoOffset(-3, 13), couponId: 'cp1007'
+    }
+});
+// 已判定：拒绝赔付 + 顾客自提责任（运输变形，常温久置）
+const OD1008 = appealOrder({
+    id: 'OD1008', code: '1208', daysAgo: 4, hour: 13, storeId: 'st_hd',
+    phone: '13800000001', contact: '李小满', bpName: '李小满', bpRel: '本人',
+    styleId: 'photo', styleNote: '食用照片打印', inscription: 'Happy Bday',
+    needCold: false, price: 308, cake: {}
+});
+OD1008.cases.unshift({
+    id: 'cs_dec_reject', kind: 'after_sale', status: 'rejected',
+    title: '取货后造型申诉：运输途中变形', raisedBy: '李小满', raisedAt: isoOffset(-4, 17),
+    detail: '取货后在户外聚餐放置 4 小时，奶油融化造型塌陷。',
+    reasonCode: 'transport_deformation', transportMode: 'ambient',
+    transportNote: '常温自提，户外放置约 4 小时后食用', signedAt: OD1008.pickedUpAt,
+    evidencePhoto: PHOTO_EVIDENCE_MELT, resolvedBy: '客服·甜小橙', resolvedAt: isoOffset(-4, 18),
+    closedNote: '门店成品照与冷藏提示齐全，变形发生在离店后的自提运输/存放环节',
+    resolution: '拒绝赔付（变形发生在运输环节，经证据比对判定为顾客自提责任）：门店成品照与冷藏提示齐全',
+    decision: {
+        verdict: 'reject', responsibility: 'self_pickup', transportDeformation: true,
+        reasonCode: 'transport_deformation', note: '门店成品照与冷藏提示齐全，变形发生在离店后的自提运输/存放环节',
+        by: '客服·甜小橙', at: isoOffset(-4, 18)
+    }
+});
+OD1008.timeline.push({
+    id: 't5', at: isoOffset(-4, 18), actorRole: 'cs', actor: '客服·甜小橙', type: 'after_sale',
+    text: '客服判定造型申诉不成立→拒绝赔付；变形发生在运输环节，经证据比对判定为顾客自提责任（运输变形，非门店造型/包装责任）；结论计入门店造型质量统计'
+});
 function buildInitialState() {
+    // 深拷贝：演示订单/优惠券是模块级单例，运行中会被原地修改，重置时必须恢复全新副本
+    const orders = JSON.parse(JSON.stringify([...exports.demoOrders, OD1004, OD1005, OD1006, OD1007, OD1008]));
+    const coupons = JSON.parse(JSON.stringify([coupon1007]));
     return {
         catalog: exports.catalog,
         stores: exports.stores,
         stock: JSON.parse(JSON.stringify(exports.stockSeed)),
         accounts: exports.accounts.map(({ password, ...rest }) => rest),
-        orders: exports.demoOrders
+        orders,
+        coupons
     };
 }
