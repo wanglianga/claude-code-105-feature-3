@@ -125,7 +125,9 @@ function PickupRow({ o, onOpen }: { o: Order; onOpen: (id: string) => void }) {
           <Badge kind={PAY_TEXT[o.paymentStatus].c}>{PAY_TEXT[o.paymentStatus].t}</Badge>
         </div>
       </div>
-      <div className="small mt8">🎂 {catName(useStore.getState().boot!.catalog, 'sizes', o.cake.sizeId)} · 题字「{o.cake.inscription}」</div>
+      <div className="small mt8">🎂 {catName(useStore.getState().boot!.catalog, 'sizes', o.cake.sizeId)} · 题字「{o.cake.inscription}」
+        {o.remakeCount > 0 && <Badge kind="orange">🔁 申诉补做 ×{o.remakeCount}</Badge>}
+      </div>
       <div className="tiny muted">{o.customer.contactName} · 尾号 {o.customer.phone.slice(-4)} · 取货码 <b style={{ fontSize: 13 }}>{o.pickupCode}</b></div>
       <div className="row mt8" style={{ gap: 6 }}>
         {o.status === 'ready'

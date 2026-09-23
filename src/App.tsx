@@ -10,6 +10,7 @@ import StoreFront from './pages/store/StoreFront'
 import StoreOrderDetail from './pages/store/StoreOrderDetail'
 import CSConsole from './pages/cs/CSConsole'
 import CSOrderDetail from './pages/cs/CSOrderDetail'
+import CouponsModal from './pages/customer/Coupons'
 
 type Route =
   | { name: 'customer-list' } | { name: 'customer-new' } | { name: 'customer-order'; id: string }
@@ -21,13 +22,15 @@ const ROLE_LABEL: Record<string, string> = {
 }
 
 export default function App() {
-  const { account, boot, init, logout, refreshOrders } = useStore()
+  const { account, boot, init, logout, refreshOrders, coupons, loadCoupons } = useStore()
   const [route, setRoute] = useState<Route>({ name: 'customer-list' })
+  const [showCoupons, setShowCoupons] = useState(false)
 
   useEffect(() => { init() }, [])
   useEffect(() => {
     if (!account) return
     refreshOrders()
+    if (account.role === 'customer') loadCoupons()
     const t = setInterval(refreshOrders, 15000) // 三端状态一致：15s 轮询
     return () => clearInterval(t)
   }, [account?.id])
@@ -45,6 +48,7 @@ export default function App() {
   if (!account) return <><Login /><Toasts /></>
 
   const storeName = account.storeId ? boot.stores.find(s => s.id === account.storeId)?.name : ''
+  const couponCount = coupons.filter(c => !c.used && new Date(c.expireAt).getTime() > Date.now()).length
 
   return (
     <div className="app-shell">
@@ -54,6 +58,7 @@ export default function App() {
           {account.role === 'customer' && <>
             <button className={route.name === 'customer-list' ? 'active' : ''} onClick={() => setRoute({ name: 'customer-list' })}>我的订单</button>
             <button className={route.name === 'customer-new' ? 'active' : ''} onClick={() => setRoute({ name: 'customer-new' })}>定制新蛋糕</button>
+            <button onClick={() => setShowCoupons(true)}>🎟️ 我的优惠券{couponCount > 0 && <span className="badge pink" style={{ marginLeft: 6 }}>{couponCount}</span>}</button>
           </>}
           {account.role === 'baker' && <button className={route.name === 'baker' ? 'active' : ''} onClick={() => setRoute({ name: 'baker' })}>制作看板</button>}
           {account.role === 'front' && <button className={route.name === 'front' ? 'active' : ''} onClick={() => setRoute({ name: 'front' })}>前台工作台</button>}
@@ -80,6 +85,7 @@ export default function App() {
       </main>
 
       <Toasts />
+      {showCoupons && <CouponsModal onClose={() => setShowCoupons(false)} />}
     </div>
   )
 }

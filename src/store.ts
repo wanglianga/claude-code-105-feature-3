@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, setToken, clearToken, type Bootstrap, type Order, type Derived, type Analytics } from './api'
+import { api, setToken, clearToken, type Bootstrap, type Order, type Derived, type Analytics, type CustomerCoupon } from './api'
 import type { Account, Catalog, StoreInfo } from '../shared/types'
 
 interface Toast { id: number; kind: 'ok' | 'err' | 'info'; text: string }
@@ -10,6 +10,7 @@ interface Store {
   orders: Order[]
   current?: { order: Order; derived: Derived }
   analytics: Analytics | null
+  coupons: CustomerCoupon[]
   toasts: Toast[]
   busy: boolean
 
@@ -22,6 +23,7 @@ interface Store {
   act: (id: string, action: string, payload?: any, opts?: { silent?: boolean }) => Promise<Order | null>
   createOrder: (body: any) => Promise<Order>
   loadAnalytics: () => Promise<void>
+  loadCoupons: () => Promise<void>
   setStock: (storeId: string, body: Record<string, 'ok' | 'low' | 'out'>) => Promise<void>
   toast: (text: string, kind?: Toast['kind']) => void
   resetDemo: () => Promise<void>
@@ -34,6 +36,7 @@ export const useStore = create<Store>((set, get) => ({
   boot: null,
   orders: [],
   analytics: null,
+  coupons: [],
   toasts: [],
   busy: false,
 
@@ -47,11 +50,12 @@ export const useStore = create<Store>((set, get) => ({
     const r = await api.login(u, p)
     setToken(r.token)
     set({ account: r.account })
+    if (r.account.role === 'customer') get().loadCoupons()
   },
 
   logout: () => {
     clearToken()
-    set({ account: null, orders: [], current: undefined, analytics: null })
+    set({ account: null, orders: [], current: undefined, analytics: null, coupons: [] })
   },
 
   init: async () => {
@@ -60,6 +64,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const me = await api.me()
       set({ account: me.account })
+      if (me.account.role === 'customer') get().loadCoupons()
     } catch { /* 未登录 */ }
   },
 
@@ -109,6 +114,13 @@ export const useStore = create<Store>((set, get) => ({
     set({ analytics })
   },
 
+  loadCoupons: async () => {
+    try {
+      const { coupons } = await api.coupons()
+      set({ coupons })
+    } catch { /* 非顾客或未登录 */ }
+  },
+
   setStock: async (storeId, body) => {
     await api.setStock(storeId, body)
     const boot = await api.bootstrap()
@@ -121,6 +133,7 @@ export const useStore = create<Store>((set, get) => ({
     const boot = await api.bootstrap()
     set({ boot })
     await get().refreshOrders()
+    if (get().account?.role === 'customer') await get().loadCoupons()
     get().toast('演示数据已重置', 'ok')
   }
 }))
@@ -131,7 +144,10 @@ function actionDoneText(a: string) {
     start_producing: '已开始制作', mark_materials: '原料准备已登记',
     log_rework: '返工已登记', upload_photos: '照片已上传',
     cs_propose: '方案已发送给顾客确认', customer_decide: '已确认，变更落回原订单',
-    open_after_sale: '售后申请已提交，客服将跟进'
+    open_after_sale: '售后申请已提交，客服将跟进',
+    open_style_appeal: '造型申诉已提交，客服将核对四类材料后判定',
+    cs_decide_appeal: '申诉判定已执行并落回原订单',
+    cs_close_appeal: '申诉已归档'
   } as Record<string, string>)[a] || '操作已记录'
 }
 

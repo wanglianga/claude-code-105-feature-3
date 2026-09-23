@@ -5,6 +5,7 @@ import {
   STATUS_STYLE, STATUS_TEXT, PAY_TEXT, CASE_STATUS, fmtDateTime, fmtDate
 } from '../../components/ui'
 import type { Order, ServiceCase } from '../../../shared/types'
+import AppealPanel from './AppealPanel'
 
 const KIND_CN: Record<string, string> = {
   date_change: '临时改期', sensitive_inscription: '敏感题字', fruit_shortage: '原料缺货',
@@ -107,6 +108,13 @@ export default function CSOrderDetail({ id, onBack }: { id: string; onBack: () =
           </div>
         </div>
       </div>
+
+      {/* 取货后造型申诉：对比下单参考、门店成品照、签收时间、运输方式 */}
+      {o.appeals.length > 0 && (
+        <div className="grid mt12" style={{ gap: 12 }}>
+          {o.appeals.map(a => <AppealPanel key={a.id} o={o} a={a} />)}
+        </div>
+      )}
     </div>
   )
 }

@@ -14,6 +14,44 @@ export type OrderStatus =
 
 export type PaymentStatus = 'unpaid' | 'paid' | 'partial' | 'refunded'
 
+// ---- 取货后造型申诉 ----
+export type AppealIssueType =
+  | 'style_mismatch' // 造型与参考图不符
+  | 'inscription_wrong' // 题字错误
+  | 'color_deviation' // 配色偏差
+  | 'decoration_missing' // 装饰/公仔缺失或损坏
+  | 'transport_deformed' // 运输造成变形/融化
+  | 'other'
+
+// 责任归属：运输造成变形时需区分门店责任与顾客自提责任
+export type AppealResponsibility =
+  | 'store' // 门店制作责任（出品即不符）
+  | 'transport_store' // 门店运输责任（门店配送途中变形，如冷链断链/包装不当）
+  | 'transport_customer' // 顾客自提责任（自提途中保管不当：常温久置/倾倒/未按冷链提示）
+  | 'none' // 无门店责任（申诉不成立）
+
+export type AppealVerdict =
+  | 'refund' // 退款
+  | 'remake' // 补做
+  | 'coupon' // 优惠券补偿
+  | 'reject' // 拒绝赔付
+
+export type AppealStatus =
+  | 'open' // 待客服判定
+  | 'decided' // 已判定，结论已执行
+  | 'closed' // 已归档
+
+// 补做排班（判决为补做时重新生成）
+export interface RemakeSchedule {
+  pickupDate: string
+  slot: string
+  makeStartTime?: string // 建议开制时间
+  readyAt?: string // 计划完成时间
+  note: string
+  renewedCode?: string // 补做单新取货码
+  pickedUpAt?: string // 补做成品实际签收时间
+}
+
 export type CaseKind =
   | 'date_change' // 顾客临时改日期
   | 'sensitive_inscription' // 题字含敏感内容
@@ -154,6 +192,9 @@ export interface TimelineEvent {
     | 'photo'
     | 'pickup'
     | 'after_sale'
+    | 'appeal'
+    | 'coupon'
+    | 'remake'
     | 'fee'
   text: string
   fields?: string[]
@@ -168,6 +209,52 @@ export interface ReworkRecord {
   note: string
   cost: number // 返工内部成本
   by: string
+}
+
+// ---- 取货后造型申诉（顾客在签收/售后窗口内提交）----
+export interface StyleAppeal {
+  id: string
+  orderId: string
+  status: AppealStatus
+  issueType: AppealIssueType
+  reason: string // 问题分类短标题
+  detail: string // 顾客详细说明
+  foundWhen: string // 发现变形/不符的时机（门店当场/返程途中/到家后/次日食用时）
+  evidencePhoto?: string // 顾客取货后上传的照片
+  raisedAt: string
+  raisedBy: string // 顾客姓名
+  // 对比快照（提交时从订单快照，便于客服一页核对）
+  pickedUpAt?: string // 签收时间
+  deliveryMethod: string // 运输方式：到店自提（冷藏/常温）/ 门店配送
+  needColdChain: boolean // 本单是否需要冷藏运输
+  styleRefPhoto?: string // 下单参考图快照
+  storeFinalPhoto?: string // 门店成品照快照
+  // 客服判定
+  responsibility?: AppealResponsibility
+  verdict?: AppealVerdict
+  decisionNote?: string // 判定说明
+  decidedBy?: string
+  decidedAt?: string
+  // 各判决的执行结果
+  refundAmount?: number // 退款判决金额
+  coupon?: { id: string; amount: number; reason: string; at: string } // 优惠券入账记录（关联本次申诉原因）
+  remake?: RemakeSchedule // 补做排班
+}
+
+// ---- 顾客账户优惠券 ----
+export interface CustomerCoupon {
+  id: string
+  phone: string // 归属顾客（按手机号）
+  amount: number
+  title: string
+  reason: string // 关联的申诉原因
+  appealId?: string
+  orderId?: string
+  grantedAt: string
+  expireAt: string
+  used: boolean
+  usedAt?: string
+  source: 'appeal' | 'manual'
 }
 
 export interface OrderPhotos {
@@ -200,6 +287,9 @@ export interface Order {
   cases: ServiceCase[]
   reworks: ReworkRecord[]
   photos: OrderPhotos
+  appeals: StyleAppeal[] // 取货后造型申诉
+  remakeOf?: string // 补做单：来源原订单 ID
+  remakeCount: number // 本单被补做次数（质量统计）
   makeStartTime?: string
   materialsReadyAt?: string
   materialsNote?: string
@@ -232,6 +322,7 @@ export interface AppState {
   stock: Record<string, Record<string, 'ok' | 'low' | 'out'>> // storeId -> fruitId
   accounts: Omit<Account, 'password'>[]
   orders: Order[]
+  coupons: CustomerCoupon[]
 }
 
 // ---- 动作载荷（/api/orders/:id/action）----
@@ -259,3 +350,36 @@ export const CASE_LABEL: Record<CaseKind, string> = {
   store_transfer: '跨店调货',
   after_sale: '售后申请'
 }
+
+// ---- 取货后造型申诉：文案映射 ----
+export const APPEAL_ISSUE_LABEL: Record<AppealIssueType, string> = {
+  style_mismatch: '造型与下单参考不符',
+  inscription_wrong: '题字错误',
+  color_deviation: '配色偏差',
+  decoration_missing: '装饰/公仔缺失或损坏',
+  transport_deformed: '运输造成变形/融化',
+  other: '其他造型问题'
+}
+
+export const APPEAL_RESPONSIBILITY_LABEL: Record<AppealResponsibility, string> = {
+  store: '门店制作责任',
+  transport_store: '门店运输责任',
+  transport_customer: '顾客自提责任',
+  none: '无门店责任'
+}
+
+export const APPEAL_VERDICT_LABEL: Record<AppealVerdict, string> = {
+  refund: '退款',
+  remake: '补做',
+  coupon: '优惠券补偿',
+  reject: '拒绝赔付'
+}
+
+export const APPEAL_STATUS_LABEL: Record<AppealStatus, { t: string; c: string }> = {
+  open: { t: '待客服判定', c: 'red' },
+  decided: { t: '已判定', c: 'green' },
+  closed: { t: '已归档', c: 'gray' }
+}
+
+// 运输变形类问题：客服必须在门店责任与顾客自提责任之间判定
+export const TRANSPORT_ISSUES: AppealIssueType[] = ['transport_deformed']

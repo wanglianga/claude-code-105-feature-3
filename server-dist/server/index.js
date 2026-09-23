@@ -160,6 +160,10 @@ app.post('/api/orders/:id/action', auth(), (req, res) => {
                 assertRole(acc, 'customer');
                 assertOwner(acc, o);
                 return res.json(go(() => eng.openAfterSale(o, payload, acc)));
+            case 'open_style_appeal':
+                assertRole(acc, 'customer');
+                assertOwner(acc, o);
+                return res.json(go(() => eng.openStyleAppeal(o, payload, acc)));
             case 'customer_request_change':
                 assertRole(acc, 'customer');
                 assertOwner(acc, o);
@@ -208,6 +212,12 @@ app.post('/api/orders/:id/action', auth(), (req, res) => {
             case 'cs_reject':
                 assertRole(acc, 'cs');
                 return res.json(go(() => eng.csRejectCase(o, payload.caseId, payload.note, acc)));
+            case 'cs_decide_appeal':
+                assertRole(acc, 'cs');
+                return res.json(go(() => eng.csDecideAppeal(o, payload.appealId, payload.decision, acc)));
+            case 'cs_close_appeal':
+                assertRole(acc, 'cs');
+                return res.json(go(() => eng.closeAppeal(o, payload.appealId, payload.note, acc)));
             case 'cs_note':
                 assertRole(acc, 'cs');
                 return res.json(go(() => eng.csNote(o, payload.text, acc)));
@@ -239,6 +249,12 @@ app.post('/api/stock/:storeId', auth(['baker', 'front', 'cs']), (req, res) => {
 // ---- 复盘看板 ----
 app.get('/api/analytics', auth(['cs', 'baker', 'front']), (req, res) => {
     res.json(eng.analytics((0, store_1.getState)()));
+});
+// ---- 顾客账户优惠券 ----
+app.get('/api/coupons', auth(), (req, res) => {
+    const acc = req.account;
+    const coupons = eng.listCoupons((0, store_1.getState)(), acc.role === 'customer' ? acc.phone : undefined);
+    res.json({ coupons });
 });
 // ---- 演示：重置数据 ----
 app.post('/api/reset', auth(['cs']), (req, res) => {

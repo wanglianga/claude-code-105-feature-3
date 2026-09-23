@@ -1,6 +1,7 @@
 import type {
   Order, AppState, OrderStatus, ServiceCase, CaseKind, TimelineEvent, FeeItem,
-  ReworkRecord, Account, CakeConfig, CustomerInfo
+  ReworkRecord, Account, CakeConfig, CustomerInfo, StyleAppeal, AppealVerdict,
+  AppealResponsibility, CustomerCoupon
 } from '../shared/types'
 import { getState, nextOrderNo, nextPickupCode, saveState } from './store'
 
@@ -114,6 +115,7 @@ export function createOrder(input: {
     price: { base, addons, coldChain, total: base + addons + coldChain },
     paidAmount: 0,
     fees: [], timeline: [], cases: [], reworks: [], photos: {},
+    appeals: [], remakeCount: 0,
     afterSalesHours: 24,
     version: 1
   }
@@ -324,6 +326,12 @@ export function handoff(o: Order, code: string, signer: string, actor: Account) 
   o.status = 'picked_up'
   o.pickedUpAt = nowIso()
   tl(o, { actorRole: 'front', actor: actorName(actor), type: 'pickup', text: `顾客${signer ? '（' + signer + '）' : ''}当面签收取货，${o.afterSalesHours} 小时售后窗口开始计算`, fields: ['成品照片/包装照片已留存', '冷藏提示已当面告知'] })
+  // 补做单再次签收：回填申诉补做排班的实际取货时间
+  const remakeAppeal = o.appeals.find(a => a.verdict === 'remake' && a.remake && !a.remake.pickedUpAt)
+  if (remakeAppeal?.remake) {
+    remakeAppeal.remake.pickedUpAt = nowIso()
+    tl(o, { actorRole: 'front', actor: actorName(actor), type: 'remake', text: `补做成品已由顾客签收（取货码 ${o.pickupCode}），造型申诉补做闭环`, fields: [`约定取货：${remakeAppeal.remake.pickupDate} ${remakeAppeal.remake.slot}`] })
+  }
   saveState()
 }
 
@@ -427,6 +435,221 @@ export function openAfterSale(o: Order, r: { reason: string; detail: string; evi
   saveState()
 }
 
+// ---------- 取货后造型申诉 ----------
+export function deliveryMethodText(o: Order): string {
+  return o.cake.needColdChain ? '到店自提 · 冷藏运输（门店提供保温袋/冰袋）' : '到店自提 · 常温携带'
+}
+
+let appealSeq = 0
+export function openStyleAppeal(o: Order, r: {
+  issueType: StyleAppeal['issueType']
+  detail: string
+  foundWhen: string
+  evidencePhoto?: string
+}, actor: Account): StyleAppeal {
+  if (o.status !== 'picked_up') throw new ActionError('只有已签收（取货后）订单可以发起造型申诉')
+  if (!o.pickedUpAt) throw new ActionError('缺少签收时间，无法发起申诉')
+  const dl = afterSaleDeadline(o)!
+  if (Date.now() > new Date(dl).getTime()) throw new ActionError(`售后窗口已于 ${fmt(dl)} 关闭，无法发起造型申诉`)
+  if (!r.evidencePhoto) throw new ActionError('请上传取货后的问题照片，便于客服对比下单参考与门店成品照')
+  if (!r.detail.trim()) throw new ActionError('请描述造型不符的具体情况')
+  if (o.appeals.some(a => a.status === 'open')) throw new ActionError('本单已有一条待客服判定的造型申诉，请等待处理结果')
+
+  const a: StyleAppeal = {
+    id: uid('ap'),
+    orderId: o.id,
+    status: 'open',
+    issueType: r.issueType,
+    reason: APPEAL_ISSUE[r.issueType],
+    detail: r.detail.trim(),
+    foundWhen: r.foundWhen,
+    evidencePhoto: r.evidencePhoto,
+    raisedAt: nowIso(),
+    raisedBy: actor.name,
+    pickedUpAt: o.pickedUpAt,
+    deliveryMethod: deliveryMethodText(o),
+    needColdChain: o.cake.needColdChain,
+    styleRefPhoto: o.cake.styleRefPhoto,
+    storeFinalPhoto: o.photos.final
+  }
+  o.appeals.unshift(a)
+  tl(o, {
+    actorRole: 'customer', actor: actor.name, type: 'appeal',
+    text: `顾客取货后发起造型申诉：${APPEAL_ISSUE[r.issueType]}（${r.foundWhen}发现）`,
+    fields: [r.detail.trim()]
+  })
+  saveState()
+  return a
+}
+
+const APPEAL_ISSUE: Record<StyleAppeal['issueType'], string> = {
+  style_mismatch: '造型与下单参考不符',
+  inscription_wrong: '题字错误',
+  color_deviation: '配色偏差',
+  decoration_missing: '装饰/公仔缺失或损坏',
+  transport_deformed: '运输造成变形/融化',
+  other: '其他造型问题'
+}
+
+const STORE_SIDE: AppealResponsibility[] = ['store', 'transport_store']
+
+// 客服判定：退款 / 补做 / 优惠券 / 拒绝赔付
+export function csDecideAppeal(o: Order, appealId: string, d: {
+  verdict: AppealVerdict
+  responsibility: AppealResponsibility
+  note: string
+  refundAmount?: number
+  couponAmount?: number
+  pickupDate?: string
+  slot?: string
+}, actor: Account): StyleAppeal {
+  const state = getState()
+  const a = o.appeals.find(x => x.id === appealId)
+  if (!a) throw new ActionError('申诉不存在')
+  if (a.status !== 'open') throw new ActionError('该申诉已判定，不可重复处理')
+
+  // 责任与判决的一致性约束
+  if (a.issueType === 'transport_deformed' && !['transport_store', 'transport_customer'].includes(d.responsibility)) {
+    throw new ActionError('运输造成变形必须在「门店运输责任」与「顾客自提责任」之间判定')
+  }
+  if (d.responsibility === 'transport_customer' && d.verdict !== 'reject') {
+    throw new ActionError('判定为顾客自提责任（自提途中未按冷藏提示保管/倾倒/常温久置）时，门店不予赔付，结论只能是拒绝赔付')
+  }
+  if (d.responsibility === 'none' && d.verdict !== 'reject') {
+    throw new ActionError('判定为无门店责任（申诉不成立）时，结论只能是拒绝赔付')
+  }
+  if (!d.note.trim()) throw new ActionError('请填写判定说明，会同步给顾客')
+
+  a.responsibility = d.responsibility
+  a.verdict = d.verdict
+  a.decisionNote = d.note.trim()
+  a.decidedBy = actor.name
+  a.decidedAt = nowIso()
+  a.status = 'decided'
+
+  const respText = RESP_LABEL[d.responsibility]
+  const storeSide = STORE_SIDE.includes(d.responsibility)
+
+  if (d.verdict === 'refund') {
+    const amount = Math.max(0, Math.round(Number(d.refundAmount) || 0))
+    if (amount <= 0) throw new ActionError('退款金额必须大于 0')
+    if (amount > o.paidAmount + (a.refundAmount || 0)) throw new ActionError('退款金额不能超过本单实际支付余额')
+    const fee: FeeItem = {
+      id: uid('fee'), label: '造型申诉退款', amount: -amount,
+      reason: `取货后造型申诉（${a.reason}）· ${respText}：${d.note.trim()}`,
+      by: actor.name, at: nowIso()
+    }
+    o.fees.push(fee)
+    a.refundAmount = amount
+    o.paidAmount = Math.max(0, o.paidAmount - amount)
+    if (o.paidAmount === 0) o.paymentStatus = 'refunded'
+    o.price.total = orderTotal(o)
+    tl(o, { actorRole: 'cs', actor: actor.name, type: 'appeal', text: `客服判定造型申诉成立（${respText}），结论：退款 ¥${amount}`, amount: -amount, fields: [d.note.trim()] })
+    tl(o, { actorRole: 'cs', actor: '系统', type: 'fee', text: `退款 ¥${amount} 已原路退回（造型申诉 ${a.id}）`, amount: -amount })
+  }
+
+  if (d.verdict === 'coupon') {
+    const amount = Math.max(0, Math.round(Number(d.couponAmount) || 0))
+    if (amount <= 0) throw new ActionError('优惠券面额必须大于 0')
+    const expire = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString()
+    const cp: CustomerCoupon = {
+      id: uid('cp'),
+      phone: o.customer.phone,
+      amount,
+      title: `造型关怀券 ¥${amount}`,
+      reason: `取货后造型申诉（订单 ${o.id}）：${a.reason}`,
+      appealId: a.id,
+      orderId: o.id,
+      grantedAt: nowIso(),
+      expireAt: expire,
+      used: false,
+      source: 'appeal'
+    }
+    state.coupons.push(cp)
+    a.coupon = { id: cp.id, amount, reason: cp.reason, at: cp.grantedAt }
+    tl(o, { actorRole: 'cs', actor: actor.name, type: 'coupon', text: `客服判定（${respText}），结论：发放 ¥${amount} 优惠券至顾客账户`, fields: [`券号 ${cp.id}`, `关联申诉原因：${a.reason}`, `有效期至 ${expire.slice(0, 10)}`] })
+  }
+
+  if (d.verdict === 'remake') {
+    if (!d.pickupDate || !d.slot) throw new ActionError('补做必须与顾客约定新的取货日期与时段')
+    if (d.pickupDate < new Date().toISOString().slice(0, 10)) throw new ActionError('补做取货日期不能早于今天')
+    // 容量校验（原单已签收、不占容量；这里校验补做单重新进入排班后的容量）
+    const size = state.catalog.sizes.find(s => s.id === o.cake.sizeId)
+    const used = fridgeUsage(state, o.storeId, d.pickupDate, false)
+    const cap = state.stores.find(s => s.id === o.storeId)!.fridgeCapacity
+    if (used + (size?.units || 1) > cap) {
+      throw new ActionError(`${d.pickupDate} 冷柜容量不足（已占 ${used}/${cap}），请换时段或换日期后再判定补做`)
+    }
+    // 重新生成制作排班与取货时间
+    const slotStart = d.slot.slice(0, 5)
+    const pickupDt = new Date(`${d.pickupDate}T${slotStart}:00`)
+    const makeDt = new Date(pickupDt.getTime() - 2 * 3600 * 1000)
+    const newCode = nextPickupCode()
+    a.remake = {
+      pickupDate: d.pickupDate,
+      slot: d.slot,
+      makeStartTime: makeDt.toISOString(),
+      readyAt: pickupDt.toISOString(),
+      note: `造型申诉（${a.reason}）判定补做；门店按原定制要求重新制作，交付出品前重新上传成品/包装照片${o.cake.needColdChain ? '与冷藏提示卡' : ''}`,
+      renewedCode: newCode
+    }
+    // 原单回到制作流程
+    const oldDate = o.pickupDate, oldSlot = o.slot
+    o.remakeCount += 1
+    o.status = 'accepted'
+    o.pickupDate = d.pickupDate
+    o.slot = d.slot
+    o.latestModifyAt = nowIso() // 补做单锁定自助修改
+    o.makeStartTime = undefined
+    o.materialsReadyAt = undefined
+    o.materialsNote = undefined
+    o.readyAt = undefined
+    o.verifiedAt = undefined
+    o.verifiedBy = undefined
+    o.pickedUpAt = undefined
+    o.pickupCode = newCode
+    o.photos = {}
+    o.version += 1
+    tl(o, {
+      actorRole: 'cs', actor: actor.name, type: 'remake',
+      text: `客服判定（${respText}），结论：补做。制作排班已重新生成：${oldDate} ${oldSlot} → ${d.pickupDate} ${d.slot}，新取货码 ${newCode}`,
+      fields: [`建议开制：${fmt(makeDt.toISOString())}`, `计划完成：${fmt(pickupDt.toISOString())}`, '原定制要求不变，出品前重新上传成品/包装照片']
+    })
+  }
+
+  if (d.verdict === 'reject') {
+    tl(o, {
+      actorRole: 'cs', actor: actor.name, type: 'appeal',
+      text: `客服判定申诉不成立（${respText}），结论：拒绝赔付`,
+      fields: [d.note.trim()]
+    })
+  }
+
+  saveState()
+  return a
+}
+
+const RESP_LABEL: Record<AppealResponsibility, string> = {
+  store: '门店制作责任',
+  transport_store: '门店运输责任',
+  transport_customer: '顾客自提责任',
+  none: '无门店责任'
+}
+
+export function closeAppeal(o: Order, appealId: string, note: string, actor: Account) {
+  const a = o.appeals.find(x => x.id === appealId)
+  if (!a) throw new ActionError('申诉不存在')
+  a.status = 'closed'
+  a.decisionNote = (a.decisionNote ? a.decisionNote + '\n' : '') + `归档：${note}`
+  tl(o, { actorRole: 'cs', actor: actor.name, type: 'appeal', text: `造型申诉归档：${note}` })
+  saveState()
+}
+
+export function listCoupons(state: AppState, phone?: string): CustomerCoupon[] {
+  const list = [...state.coupons].sort((a, b) => b.grantedAt.localeCompare(a.grantedAt))
+  return phone ? list.filter(c => c.phone === phone) : list
+}
+
 // ---------- 复盘聚合 ----------
 export function analytics(state: AppState) {
   const styleName = new Map(state.catalog.styles.map(s => [s.id, s.name]))
@@ -457,6 +680,62 @@ export function analytics(state: AppState) {
   const casesByKind: Record<string, number> = {}
   for (const o of state.orders) for (const c of o.cases) casesByKind[c.kind] = (casesByKind[c.kind] || 0) + 1
   const afterCases = state.orders.flatMap(o => o.cases.filter(c => c.kind === 'after_sale'))
+
+  // ---- 门店造型质量统计：取货后造型申诉 ----
+  const storeName = new Map(state.stores.map(s => [s.id, s.name]))
+  const allAppeals = state.orders.flatMap(o => o.appeals.map(a => ({ o, a })))
+  const decidedAppeals = allAppeals.filter(x => aDecided(x.a))
+  // 门店担责口径：门店制作责任 + 门店运输责任（自提责任不计门店质量问题）
+  const storeAtFault = (a: StyleAppeal) => !!a.responsibility && ['store', 'transport_store'].includes(a.responsibility)
+
+  const qualityByStore = state.stores.map(s => {
+    const rows = allAppeals.filter(x => x.o.storeId === s.id)
+    const decided = rows.filter(x => aDecided(x.a))
+    const atFault = decided.filter(x => storeAtFault(x.a))
+    const refund = decided.reduce((sum, x) => sum + (x.a.refundAmount || 0), 0)
+    const couponSum = decided.reduce((sum, x) => sum + (x.a.coupon?.amount || 0), 0)
+    const remakes = decided.filter(x => x.a.verdict === 'remake').length
+    const delivered = state.orders.filter(o => o.storeId === s.id && ['picked_up', 'closed'].includes(o.status)).length
+    return {
+      storeId: s.id, store: s.name,
+      appeals: rows.length,
+      decided: decided.length,
+      open: rows.filter(x => x.a.status === 'open').length,
+      storeFault: atFault.length,
+      customerFault: decided.filter(x => x.a.responsibility === 'transport_customer').length,
+      rejected: decided.filter(x => x.a.verdict === 'reject').length,
+      refunds: refund,
+      coupons: couponSum,
+      remakes,
+      faultRate: delivered ? atFault.length / delivered : 0,
+      delivered
+    }
+  }).sort((a, b) => b.storeFault - a.storeFault || b.appeals - a.appeals)
+
+  // 按造型聚合：哪些造型被申诉/被判门店责任
+  const qualityByStyle = new Map<string, {
+    styleId: string; style: string; appeals: number; storeFault: number; remakes: number; refunds: number
+  }>()
+  for (const { o, a } of allAppeals) {
+    const k = o.cake.styleId
+    const cur = qualityByStyle.get(k) || { styleId: k, style: styleName.get(k) || k, appeals: 0, storeFault: 0, remakes: 0, refunds: 0 }
+    cur.appeals += 1
+    if (aDecided(a)) {
+      if (storeAtFault(a)) cur.storeFault += 1
+      if (a.verdict === 'remake') cur.remakes += 1
+      cur.refunds += a.refundAmount || 0
+    }
+    qualityByStyle.set(k, cur)
+  }
+
+  // 责任分布与判决分布（全局）
+  const responsibilityDist: Record<string, number> = {}
+  const verdictDist: Record<string, number> = {}
+  for (const { a } of decidedAppeals) {
+    if (a.responsibility) responsibilityDist[a.responsibility] = (responsibilityDist[a.responsibility] || 0) + 1
+    if (a.verdict) verdictDist[a.verdict] = (verdictDist[a.verdict] || 0) + 1
+  }
+
   const today = new Date().toISOString().slice(0, 10)
   const fridgeToday = state.stores.map(s => ({
     storeId: s.id, store: s.name, used: fridgeUsage(state, s.id, today, false), capacity: s.fridgeCapacity, date: today
@@ -468,9 +747,27 @@ export function analytics(state: AppState) {
       .sort((a, b) => b.count - a.count),
     heat, casesByKind,
     afterSaleRate: afterCases.length ? afterCases.filter(c => ['resolved', 'closed'].includes(c.status)).length / afterCases.length : 0,
-    fridgeToday
+    fridgeToday,
+    styleQuality: {
+      totalAppeals: allAppeals.length,
+      openAppeals: allAppeals.filter(x => x.a.status === 'open').length,
+      storeFaultCount: decidedAppeals.filter(x => storeAtFault(x.a)).length,
+      customerFaultCount: decidedAppeals.filter(x => x.a.responsibility === 'transport_customer').length,
+      totalRefunds: decidedAppeals.reduce((s, x) => s + (x.a.refundAmount || 0), 0),
+      totalCoupons: decidedAppeals.reduce((s, x) => s + (x.a.coupon?.amount || 0), 0),
+      totalRemakes: decidedAppeals.filter(x => x.a.verdict === 'remake').length,
+      byStore: qualityByStore,
+      byStyle: [...qualityByStyle.values()].sort((a, b) => b.storeFault - a.storeFault || b.appeals - a.appeals),
+      responsibilityDist,
+      verdictDist
+    }
   }
 }
+
+function aDecided(a: StyleAppeal): boolean {
+  return a.status === 'decided' || a.status === 'closed'
+}
+
 
 export function fmt(iso: string) {
   const d = new Date(iso)

@@ -50,6 +50,15 @@ export default function StoreOrderDetail({ id, onBack }: { id: string; onBack: (
       {tab === 'work' && (
         <div className="grid cols-2 mt12">
           <div className="grid">
+            {/* 补做单提示 */}
+            {o.remakeCount > 0 && (
+              <Notice kind="warn" title={`🔁 造型申诉补做单（第 ${o.remakeCount} 次补做）`}>
+                <span className="small">
+                  本单因顾客取货后造型申诉被判定补做，制作排班与取货时间已重新生成；请严格对照下单参考图/造型备注制作并重新上传三类照片，新取货码 <b>{o.pickupCode}</b>。
+                  {o.appeals[0]?.decisionNote && <><br />客服判定说明：{o.appeals[0].decisionNote}</>}
+                </span>
+              </Notice>
+            )}
             {/* 关键时间 */}
             <div className="card accent">
               <h3>⏰ 制作时间</h3>

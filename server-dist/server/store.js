@@ -22,6 +22,7 @@ function loadState() {
         if (fs_1.default.existsSync(DB_FILE)) {
             const raw = JSON.parse(fs_1.default.readFileSync(DB_FILE, 'utf-8'));
             if (raw && raw.orders && raw.catalog) {
+                migrate(raw);
                 state = raw;
                 return state;
             }
@@ -33,6 +34,17 @@ function loadState() {
     state = (0, seed_1.buildInitialState)();
     saveState();
     return state;
+}
+// 旧版本数据迁移：补齐取货后造型申诉相关字段
+function migrate(raw) {
+    if (!Array.isArray(raw.coupons))
+        raw.coupons = [];
+    for (const o of raw.orders || []) {
+        if (!Array.isArray(o.appeals))
+            o.appeals = [];
+        if (typeof o.remakeCount !== 'number')
+            o.remakeCount = 0;
+    }
 }
 function getState() {
     return state;

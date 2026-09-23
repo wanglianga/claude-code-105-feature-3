@@ -60,13 +60,24 @@ function BakerCard({ o, onOpen }: { o: Order; onOpen: (id: string) => void }) {
     <div className="card" style={{ padding: 13, borderLeft: blockedCase ? '3px solid var(--danger)' : overdue ? '3px solid var(--warn)' : undefined }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <button className="btn sm ghost" style={{ padding: 0, fontWeight: 800, fontSize: 14 }} onClick={() => onOpen(o.id)}>{o.id}</button>
-        <Badge kind={STATUS_STYLE[o.status]}>{STATUS_TEXT[o.status]}</Badge>
+        <div className="row" style={{ gap: 6 }}>
+          {o.remakeCount > 0 && <Badge kind="orange">🔁 补做 ×{o.remakeCount}</Badge>}
+          <Badge kind={STATUS_STYLE[o.status]}>{STATUS_TEXT[o.status]}</Badge>
+        </div>
       </div>
       <div className="small mt8">
         🕑 <b>{fmtDate(o.pickupDate)} {o.slot}</b> 取
         <span className="muted">（建议 {new Date(new Date(`${o.pickupDate}T${o.slot.slice(0, 2)}:00`).getTime() - 2 * 3600e3).getHours()}:00 前完成）</span>
         {overdue && <Badge kind="orange">临近取货</Badge>}
       </div>
+      {o.remakeCount > 0 && (
+        <Notice kind="warn" title="造型申诉补做单">
+          <span className="small">
+            本单因取货后造型申诉判定补做，制作排班已重新生成；请严格按下单参考与造型备注制作，
+            新取货码 <b>{o.pickupCode}</b>，交付前必须重新上传成品/包装照片{o.cake.needColdChain ? '与冷藏提示卡' : ''}。
+          </span>
+        </Notice>
+      )}
       <div className="small mt8">🎂 {catName(cat, 'sizes', o.cake.sizeId)} · {catName(cat, 'styles', o.cake.styleId)}</div>
       <div className="small">✍️ 题字：<b>{o.cake.inscription || '无题字'}</b></div>
       {o.cake.avoidAllergenIds.length > 0 && (

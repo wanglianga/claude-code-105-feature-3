@@ -6,6 +6,7 @@ import {
 } from '../../components/ui'
 import { sensitiveWords } from '../../price'
 import type { Order, ServiceCase } from '../../../shared/types'
+import { AppealSubmitModal, AppealCard } from './StyleAppeal'
 
 const CASE_ICON: Record<string, string> = {
   date_change: '📅', sensitive_inscription: '✍️', fruit_shortage: '🍓',
@@ -19,6 +20,7 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
   const [showDate, setShowDate] = useState(false)
   const [showTransfer, setShowTransfer] = useState(false)
   const [showAfterSale, setShowAfterSale] = useState(false)
+  const [showAppeal, setShowAppeal] = useState(false)
   useEffect(() => { openOrder(id) }, [id])
   if (!boot || !current) return null
   const { order: o, derived } = current
@@ -50,6 +52,13 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
             {c.detail}
           </Notice>
         ))}
+        {/* 取货后造型申诉 */}
+        {o.appeals.map(a => <AppealCard key={a.id} o={o} a={a} />)}
+        {o.remakeCount > 0 && ['pending_accept', 'accepted', 'producing', 'ready'].includes(o.status) && (
+          <Notice kind="warn" title={`🔁 本单为造型申诉补做单（第 ${o.remakeCount} 次补做）`}>
+            门店将按原定制要求重新制作，制作排班与取货时间已重新生成；请按新时间、新取货码到店取货，取货时请再次当面核对造型。
+          </Notice>
+        )}
       </div>
 
       <div className="tabs mt16">
@@ -152,8 +161,18 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
                     ? <>售后窗口计算中，剩余 <b className="countdown">{afterCd.text}</b>（{o.afterSalesHours} 小时）。如发现造型不符、原料错误等，请在窗口内提交照片证据。</>
                     : <>售后窗口已结束。</>}
                 </Notice>
-                {afterCd && !afterCd.over &&
-                  <button className="btn danger mt12" onClick={() => setShowAfterSale(true)}>发起售后（造型不符等）</button>}
+                {afterCd && !afterCd.over && (
+                  <div className="row mt12" style={{ gap: 8 }}>
+                    <button className="btn danger" onClick={() => setShowAppeal(true)}
+                      disabled={o.appeals.some(a => a.status === 'open')}>
+                      {o.appeals.some(a => a.status === 'open') ? '造型申诉处理中…' : '📸 发起取货后造型申诉'}
+                    </button>
+                    <button className="btn sm ghost" onClick={() => setShowAfterSale(true)}>其他售后（原料/食用等）</button>
+                  </div>
+                )}
+                {o.appeals.length > 0 && (
+                  <div className="tiny muted mt8">本单已有 {o.appeals.length} 条造型申诉记录，可在上方卡片查看对比与判定结论。</div>
+                )}
               </>
             )}
             {o.status === 'closed' && <div className="small muted">售后窗口已关闭，感谢惠顾。历史工单与证据仍可在订单动态中查看。</div>}
@@ -170,6 +189,7 @@ export default function CustomerOrderDetail({ id, onBack }: { id: string; onBack
       {showDate && <DateChangeModal />}
       {showTransfer && <TransferModal />}
       {showAfterSale && <AfterSaleModal />}
+      {showAppeal && <AppealSubmitModal o={o} onClose={() => setShowAppeal(false)} />}
       </>
     )
   }

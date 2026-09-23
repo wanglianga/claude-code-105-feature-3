@@ -16,6 +16,8 @@ export default function CustomerOrders({ onOpen, onNew }: { onOpen: (id: string)
         <Badge kind={PAY_TEXT[o.paymentStatus].c}>{PAY_TEXT[o.paymentStatus].t}</Badge>
         {o.cases.some(c => ['open', 'awaiting_customer'].includes(c.status)) &&
           <Badge kind="red">🔔 {o.cases.filter(c => ['open', 'awaiting_customer'].includes(c.status)).length} 个待处理事项</Badge>}
+        {o.appeals.some(a => a.status === 'open') && <Badge kind="red">🛟 造型申诉待判定</Badge>}
+        {o.remakeCount > 0 && ['pending_accept', 'accepted', 'producing', 'ready'].includes(o.status) && <Badge kind="orange">🔁 补做中</Badge>}
       </div>
       <div className="oc-mid">
         <span>🎂 <b>{catName(boot.catalog, 'sizes', o.cake.sizeId)} · {catName(boot.catalog, 'styles', o.cake.styleId)}</b></span>

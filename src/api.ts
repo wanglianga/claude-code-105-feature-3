@@ -1,5 +1,6 @@
 import type {
-  Account, AppState, Catalog, Order, StoreInfo, ServiceCase
+  Account, AppState, Catalog, Order, StoreInfo, ServiceCase,
+  StyleAppeal, CustomerCoupon
 } from '../shared/types'
 
 const TOKEN_KEY = 'scs_token'
@@ -34,6 +35,7 @@ export const api = {
   setStock: (storeId: string, body: Record<string, 'ok' | 'low' | 'out'>) =>
     request<{ ok: boolean }>(`/api/stock/${storeId}`, { method: 'POST', body: JSON.stringify(body) }),
   analytics: () => request<Analytics>('/api/analytics'),
+  coupons: () => request<{ coupons: CustomerCoupon[] }>('/api/coupons'),
   reset: () => request<{ ok: boolean }>('/api/reset', { method: 'POST' })
 }
 
@@ -48,6 +50,17 @@ export interface Bootstrap extends Pick<AppState, 'catalog' | 'stores' | 'stock'
   capacity: (CapacityInfo & { storeId: string })[]
 }
 export interface Derived { total: number; modifyLocked: boolean; afterSaleDeadline: string | null }
+export interface StyleQualityByStore {
+  storeId: string; store: string
+  appeals: number; decided: number; open: number
+  storeFault: number; customerFault: number; rejected: number
+  refunds: number; coupons: number; remakes: number
+  faultRate: number; delivered: number
+}
+export interface StyleQualityByStyle {
+  styleId: string; style: string
+  appeals: number; storeFault: number; remakes: number; refunds: number
+}
 export interface Analytics {
   reworkByStyle: { styleId: string; style: string; count: number; cost: number }[]
   changeByMaterial: { materialId: string; material: string; count: number; kinds: Record<string, number> }[]
@@ -55,6 +68,15 @@ export interface Analytics {
   casesByKind: Record<string, number>
   afterSaleRate: number
   fridgeToday: { storeId: string; store: string; used: number; capacity: number; date: string }[]
+  styleQuality?: {
+    totalAppeals: number; openAppeals: number
+    storeFaultCount: number; customerFaultCount: number
+    totalRefunds: number; totalCoupons: number; totalRemakes: number
+    byStore: StyleQualityByStore[]
+    byStyle: StyleQualityByStyle[]
+    responsibilityDist: Record<string, number>
+    verdictDist: Record<string, number>
+  }
 }
 
-export type { Account, Catalog, Order, StoreInfo, ServiceCase }
+export type { Account, Catalog, Order, StoreInfo, ServiceCase, StyleAppeal, CustomerCoupon }

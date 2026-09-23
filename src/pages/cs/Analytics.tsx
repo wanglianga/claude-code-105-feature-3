@@ -8,6 +8,13 @@ const KIND_CN: Record<string, string> = {
   fridge_capacity: '冷柜不足', store_transfer: '更换门店', after_sale: '售后申请'
 }
 
+const RESP_CN: Record<string, string> = {
+  store: '门店制作责任', transport_store: '门店运输责任', transport_customer: '顾客自提责任', none: '无门店责任'
+}
+const VERDICT_CN: Record<string, string> = {
+  refund: '退款', remake: '补做', coupon: '优惠券', reject: '拒绝赔付'
+}
+
 export default function AnalyticsView() {
   const { analytics, loadAnalytics, boot } = useStore()
   useEffect(() => { loadAnalytics() }, [])
@@ -39,6 +46,87 @@ export default function AnalyticsView() {
           <div className="s-sub">取货签收后 24h 窗口内发起，依据三类交付照片与顾客证据判定</div>
         </div>
       </div>
+
+      {/* 门店造型质量统计：取货后造型申诉结论 */}
+      {a.styleQuality && (
+        <div className="card mt16">
+          <h3>🛟 门店造型质量统计 <span className="sec-sub">取货后造型申诉：结论、责任归属与门店质量</span></h3>
+          <div className="chips mt8">
+            <span className="chip sel">申诉总数 <span className="n">{a.styleQuality.totalAppeals}</span></span>
+            <span className="chip sel">待判定 <span className="n">{a.styleQuality.openAppeals}</span></span>
+            <span className="chip sel" style={{ borderColor: 'var(--danger)' }}>门店责任 <span className="n">{a.styleQuality.storeFaultCount}</span></span>
+            <span className="chip sel" style={{ borderColor: 'var(--info, #2b6cb0)' }}>顾客自提责任 <span className="n">{a.styleQuality.customerFaultCount}</span></span>
+            <span className="chip sel">退款合计 <span className="n">¥{a.styleQuality.totalRefunds}</span></span>
+            <span className="chip sel">优惠券合计 <span className="n">¥{a.styleQuality.totalCoupons}</span></span>
+            <span className="chip sel">补做单数 <span className="n">{a.styleQuality.totalRemakes}</span></span>
+          </div>
+
+          <table className="table mt12">
+            <thead>
+              <tr>
+                <th>门店</th><th>申诉</th><th>待判定</th><th>门店责任</th><th>顾客自提责任</th>
+                <th>拒绝赔付</th><th>补做</th><th>退款金额</th><th>优惠券金额</th><th>质量问题率*</th>
+              </tr>
+            </thead>
+            <tbody>
+              {a.styleQuality.byStore.map(s => (
+                <tr key={s.storeId}>
+                  <td><b>{s.store}</b><div className="tiny muted">已交付 {s.delivered} 单</div></td>
+                  <td>{s.appeals}</td>
+                  <td>{s.open > 0 ? <Badge kind="red">{s.open}</Badge> : 0}</td>
+                  <td>{s.storeFault > 0 ? <Badge kind="red">{s.storeFault}</Badge> : 0}</td>
+                  <td>{s.customerFault > 0 ? <Badge kind="blue">{s.customerFault}</Badge> : 0}</td>
+                  <td>{s.rejected}</td>
+                  <td>{s.remakes > 0 ? <Badge kind="orange">{s.remakes}</Badge> : 0}</td>
+                  <td style={{ color: s.refunds ? 'var(--ok)' : undefined }}>{s.refunds ? `¥${s.refunds}` : '—'}</td>
+                  <td style={{ color: s.coupons ? 'var(--ok)' : undefined }}>{s.coupons ? `¥${s.coupons}` : '—'}</td>
+                  <td><b style={{ color: s.faultRate >= 0.2 ? 'var(--danger)' : s.faultRate > 0 ? 'var(--warn)' : undefined }}>
+                    {Math.round(s.faultRate * 100)}%
+                  </b></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="tiny muted mt8">* 质量问题率 = 判定为门店责任（制作责任 + 门店运输责任）的申诉数 / 该店已签收交付订单数；顾客自提责任与申诉不成立不计入门店质量问题。</div>
+
+          <div className="grid cols-2 mt16">
+            <div>
+              <h3 className="sec-sub" style={{ fontSize: 14 }}>被申诉造型排行（含门店责任数 / 补做 / 退款）</h3>
+              {a.styleQuality.byStyle.length === 0 ? <div className="small muted">暂无申诉</div> : (
+                <div className="grid mt8" style={{ gap: 10 }}>
+                  {a.styleQuality.byStyle.map((s, i) => {
+                    const max = Math.max(1, ...a.styleQuality!.byStyle.map(x => x.appeals))
+                    return (
+                      <div key={s.styleId}>
+                        <div className="row" style={{ justifyContent: 'space-between' }}>
+                          <span className="small"><b>{i + 1}. {s.style}</b></span>
+                          <span className="small muted">申诉 {s.appeals} · 门店责任 {s.storeFault} · 补做 {s.remakes} · 退 ¥{s.refunds}</span>
+                        </div>
+                        <div className="bar mt8"><i className={s.storeFault >= 1 ? 'full' : 'warn'} style={{ width: `${s.appeals / max * 100}%` }} /></div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div>
+              <h3 className="sec-sub" style={{ fontSize: 14 }}>责任归属分布 / 判决结论分布（已判定）</h3>
+              <div className="chips mt8">
+                {Object.entries(a.styleQuality.responsibilityDist).map(([k, n]) => (
+                  <span key={k} className="chip sel">{RESP_CN[k] || k} <span className="n">×{n}</span></span>
+                ))}
+                {Object.keys(a.styleQuality.responsibilityDist).length === 0 && <span className="small muted">暂无已判定申诉</span>}
+              </div>
+              <div className="chips mt8">
+                {Object.entries(a.styleQuality.verdictDist).map(([k, n]) => (
+                  <span key={k} className="chip">{VERDICT_CN[k] || k} <span className="n">×{n}</span></span>
+                ))}
+              </div>
+              <div className="tiny muted mt12">运营闭环：退款/优惠券自动入顾客账户并关联申诉原因；补做自动重新生成制作排班与取货码并回流裱花看板；运输变形按「门店运输 / 顾客自提」区分责任，自提责任不拖累门店质量分。</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid cols-2 mt16">
         {/* 造型返工 */}

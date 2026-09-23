@@ -4,7 +4,11 @@ import {
   Badge, Notice, Modal, EmptyState,
   STATUS_STYLE, STATUS_TEXT, PAY_TEXT, CASE_STATUS, fmtDateTime, fmtDate
 } from '../../components/ui'
-import type { Order, ServiceCase, CaseKind } from '../../../shared/types'
+import {
+  APPEAL_ISSUE_LABEL, APPEAL_RESPONSIBILITY_LABEL, APPEAL_VERDICT_LABEL,
+  APPEAL_STATUS_LABEL
+} from '../../../shared/types'
+import type { Order, ServiceCase, CaseKind, StyleAppeal } from '../../../shared/types'
 import AnalyticsView from './Analytics'
 
 const CASE_ICON: Record<CaseKind, string> = {
@@ -18,18 +22,26 @@ const KIND_NAME: Record<CaseKind, string> = {
 
 export default function CSConsole({ onOpen }: { onOpen: (id: string) => void }) {
   const { orders, boot, refreshOrders, resetDemo, account } = useStore()
-  const [tab, setTab] = useState<'cases' | 'orders' | 'analytics'>('cases')
+  const [tab, setTab] = useState<'appeals' | 'cases' | 'orders' | 'analytics'>('appeals')
   const [kindFilter, setKindFilter] = useState<string>('open')
+  const [appealFilter, setAppealFilter] = useState<'open' | 'decided' | 'all'>('open')
   useEffect(() => { refreshOrders() }, [])
 
   const allCases = useMemo(() => orders.flatMap(o => o.cases.map(c => ({ o, c })))
     .sort((a, b) => a.c.raisedAt.localeCompare(b.c.raisedAt)), [orders])
+
+  const allAppeals = useMemo(() => orders.flatMap(o => o.appeals.map(a => ({ o, a })))
+    .sort((a, b) => b.a.raisedAt.localeCompare(a.a.raisedAt)), [orders])
+  const openAppealCount = allAppeals.filter(x => x.a.status === 'open').length
 
   const visibleCases = allCases.filter(({ c }) =>
     kindFilter === 'all' ? true :
       kindFilter === 'open' ? ['open', 'awaiting_customer'].includes(c.status) :
       kindFilter === 'done' ? ['resolved', 'closed', 'rejected'].includes(c.status) :
       c.kind === kindFilter && ['open', 'awaiting_customer'].includes(c.status))
+
+  const visibleAppeals = allAppeals.filter(({ a }) =>
+    appealFilter === 'all' ? true : appealFilter === 'open' ? a.status === 'open' : a.status !== 'open')
 
   return (
     <div>
@@ -42,6 +54,9 @@ export default function CSConsole({ onOpen }: { onOpen: (id: string) => void }) 
       </div>
 
       <div className="tabs">
+        <button className={tab === 'appeals' ? 'active' : ''} onClick={() => setTab('appeals')}>
+          🛟 取货后造型申诉 {openAppealCount > 0 && <Badge kind="red">{openAppealCount}</Badge>}
+        </button>
         <button className={tab === 'cases' ? 'active' : ''} onClick={() => setTab('cases')}>
           异常工单 {allCases.filter(x => ['open', 'awaiting_customer'].includes(x.c.status)).length > 0 &&
             <Badge kind="red">{allCases.filter(x => ['open', 'awaiting_customer'].includes(x.c.status)).length}</Badge>}
@@ -49,6 +64,20 @@ export default function CSConsole({ onOpen }: { onOpen: (id: string) => void }) 
         <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}>全部订单（{orders.length}）</button>
         <button className={tab === 'analytics' ? 'active' : ''} onClick={() => setTab('analytics')}>门店复盘看板</button>
       </div>
+
+      {tab === 'appeals' && (
+        <>
+          <div className="chips mt16">
+            {([['open', '待判定'], ['decided', '已判定/归档'], ['all', '全部']] as const).map(([k, label]) => (
+              <button key={k} className={`chip ${appealFilter === k ? 'sel' : ''}`} onClick={() => setAppealFilter(k)}>{label}</button>
+            ))}
+          </div>
+          {visibleAppeals.length === 0 && <div className="mt16"><EmptyState icon="🛟" title="当前没有造型申诉" sub="顾客在签收后的售后窗口内上传照片发起申诉后，会带着下单参考/成品照/签收时间/运输方式出现在这里" /></div>}
+          <div className="grid cols-2 mt12">
+            {visibleAppeals.map(({ o, a }) => <AppealCaseCard key={a.id} o={o} a={a} onOpen={onOpen} />)}
+          </div>
+        </>
+      )}
 
       {tab === 'cases' && (
         <>
@@ -315,6 +344,55 @@ function CaseEvidence({ o, c, onClose }: { o: Order; c: ServiceCase; onClose: ()
         </div>
       </div>
     </Modal>
+  )
+}
+
+// ---------- 取货后造型申诉卡片（工单台专属 tab）----------
+function AppealCaseCard({ o, a, onOpen }: { o: Order; a: StyleAppeal; onOpen: (id: string) => void }) {
+  const st = APPEAL_STATUS_LABEL[a.status]
+  return (
+    <div className="card" style={{ borderLeft: a.status === 'open' ? '3px solid var(--danger)' : '3px solid var(--ok)' }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h3 style={{ margin: 0 }}>🛟 {APPEAL_ISSUE_LABEL[a.issueType]}</h3>
+        <Badge kind={st.c}>{st.t}</Badge>
+      </div>
+      <button className="btn sm ghost mt8" style={{ padding: 0 }} onClick={() => onOpen(o.id)}>
+        订单 {o.id} · {storeName(useStore.getState().boot!.stores, o.storeId)} · 顾客 {o.customer.contactName}
+      </button>
+      <div className="grid cols-3 mt8" style={{ gap: 8 }}>
+        <MiniImg v={a.styleRefPhoto} label="下单参考" />
+        <MiniImg v={a.storeFinalPhoto} label="成品照" />
+        <MiniImg v={a.evidencePhoto} label="顾客证据" />
+      </div>
+      <div className="tiny muted mt8">
+        签收 {a.pickedUpAt ? fmtDateTime(a.pickedUpAt) : '—'} · {a.needColdChain ? '❄️冷藏自提' : '🚶常温自提'} · {a.foundWhen}发现
+      </div>
+      <div className="tiny muted mt8 line-clamp">{a.detail}</div>
+      {a.status !== 'open' && (
+        <div className="small mt8" style={{ background: 'var(--cream)', borderRadius: 8, padding: 8 }}>
+          <Badge kind={a.responsibility === 'transport_customer' || a.responsibility === 'none' ? 'blue' : 'red'}>
+            {a.responsibility ? APPEAL_RESPONSIBILITY_LABEL[a.responsibility] : ''}
+          </Badge>
+          <Badge kind={a.verdict === 'reject' ? 'gray' : 'green'}>{a.verdict ? APPEAL_VERDICT_LABEL[a.verdict] : ''}</Badge>
+          {a.refundAmount ? <b className="mt8" style={{ color: 'var(--ok)', display: 'block' }}>退款 ¥{a.refundAmount}</b> : null}
+          {a.coupon ? <b style={{ color: 'var(--ok)' }}>优惠券 ¥{a.coupon.amount} 已入账</b> : null}
+          {a.remake ? <b style={{ color: 'var(--brand-dark)', display: 'block' }}>补做：{fmtDate(a.remake.pickupDate)} {a.remake.slot}（{a.remake.pickedUpAt ? '已补做签收' : '待交付'}）</b> : null}
+        </div>
+      )}
+      <div className="row mt12">
+        <button className="btn sm primary" onClick={() => onOpen(o.id)}>{a.status === 'open' ? '去判定' : '查看/归档'}</button>
+      </div>
+    </div>
+  )
+}
+
+function MiniImg({ v, label }: { v?: string; label: string }) {
+  return (
+    <div>
+      {v ? <img className="photo-thumb" src={v} style={{ aspectRatio: '4 / 3', objectFit: 'cover' }} />
+        : <div className="photo-thumb" style={{ display: 'grid', placeItems: 'center', aspectRatio: '4 / 3' }}><span className="tiny muted">无</span></div>}
+      <div className="tiny muted" style={{ textAlign: 'center' }}>{label}</div>
+    </div>
   )
 }
 
